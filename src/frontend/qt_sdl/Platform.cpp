@@ -40,6 +40,7 @@
 #include "Net.h"
 #include "MPInterface.h"
 #include "SPI_Firmware.h"
+#include "NetplayMachine.h"
 
 extern CameraManager* camManager[2];
 
@@ -48,8 +49,19 @@ extern melonDS::Net net;
 namespace melonDS::Platform
 {
 
+// The consoles of an online session (RollbackNet::NetplayMachine) have a
+// ConsoleSlot as their userdata instead of an EmuInstance: their wireless
+// goes through the machine's bus, they write nothing to disk, and they hear
+// silence and see no add-ons, so that every computer runs them the same way.
+using RollbackNet::ConsoleSlot;
+
 void SignalStop(StopReason reason, void* userdata)
 {
+    if (ConsoleSlot* slot = ConsoleSlot::From(userdata))
+    {
+        slot->SignalStop();
+        return;
+    }
     EmuInstance* inst = (EmuInstance*)userdata;
     inst->emuStop(reason);
 }
@@ -400,6 +412,7 @@ u64 GetUSCount()
 
 void WriteNDSSave(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen, void* userdata)
 {
+    if (ConsoleSlot::From(userdata)) return;
     EmuInstance* inst = (EmuInstance*)userdata;
     if (inst->ndsSave)
         inst->ndsSave->RequestFlush(savedata, savelen, writeoffset, writelen);
@@ -407,6 +420,7 @@ void WriteNDSSave(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen
 
 void WriteGBASave(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen, void* userdata)
 {
+    if (ConsoleSlot::From(userdata)) return;
     EmuInstance* inst = (EmuInstance*)userdata;
     if (inst->gbaSave)
         inst->gbaSave->RequestFlush(savedata, savelen, writeoffset, writelen);
@@ -414,6 +428,7 @@ void WriteGBASave(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen
 
 void WriteFirmware(const Firmware& firmware, u32 writeoffset, u32 writelen, void* userdata)
 {
+    if (ConsoleSlot::From(userdata)) return;
     EmuInstance* inst = (EmuInstance*)userdata;
     printf("saving firmware for instance %d\n", inst->getInstanceID());
     if (!inst->firmwareSave)
@@ -447,6 +462,7 @@ void WriteFirmware(const Firmware& firmware, u32 writeoffset, u32 writelen, void
 
 void WriteDateTime(int year, int month, int day, int hour, int minute, int second, void* userdata)
 {
+    if (ConsoleSlot::From(userdata)) return;
     EmuInstance* inst = (EmuInstance*)userdata;
     QDateTime hosttime = QDateTime::currentDateTime();
     QDateTime time = QDateTime(QDate(year, month, day), QTime(hour, minute, second));
@@ -459,54 +475,63 @@ void WriteDateTime(int year, int month, int day, int hour, int minute, int secon
 
 void MP_Begin(void* userdata)
 {
+    if (ConsoleSlot* slot = ConsoleSlot::From(userdata)) { slot->MPBegin(); return; }
     int inst = ((EmuInstance*)userdata)->getInstanceID();
     MPInterface::Get().Begin(inst);
 }
 
 void MP_End(void* userdata)
 {
+    if (ConsoleSlot* slot = ConsoleSlot::From(userdata)) { slot->MPEnd(); return; }
     int inst = ((EmuInstance*)userdata)->getInstanceID();
     MPInterface::Get().End(inst);
 }
 
 int MP_SendPacket(u8* data, int len, u64 timestamp, void* userdata)
 {
+    if (ConsoleSlot* slot = ConsoleSlot::From(userdata)) return slot->MPSendPacket(data, len, timestamp);
     int inst = ((EmuInstance*)userdata)->getInstanceID();
     return MPInterface::Get().SendPacket(inst, data, len, timestamp);
 }
 
 int MP_RecvPacket(u8* data, u64* timestamp, void* userdata)
 {
+    if (ConsoleSlot* slot = ConsoleSlot::From(userdata)) return slot->MPRecvPacket(data, timestamp);
     int inst = ((EmuInstance*)userdata)->getInstanceID();
     return MPInterface::Get().RecvPacket(inst, data, timestamp);
 }
 
 int MP_SendCmd(u8* data, int len, u64 timestamp, void* userdata)
 {
+    if (ConsoleSlot* slot = ConsoleSlot::From(userdata)) return slot->MPSendCmd(data, len, timestamp);
     int inst = ((EmuInstance*)userdata)->getInstanceID();
     return MPInterface::Get().SendCmd(inst, data, len, timestamp);
 }
 
 int MP_SendReply(u8* data, int len, u64 timestamp, u16 aid, void* userdata)
 {
+    if (ConsoleSlot* slot = ConsoleSlot::From(userdata)) return slot->MPSendReply(data, len, timestamp, aid);
     int inst = ((EmuInstance*)userdata)->getInstanceID();
     return MPInterface::Get().SendReply(inst, data, len, timestamp, aid);
 }
 
 int MP_SendAck(u8* data, int len, u64 timestamp, void* userdata)
 {
+    if (ConsoleSlot* slot = ConsoleSlot::From(userdata)) return slot->MPSendAck(data, len, timestamp);
     int inst = ((EmuInstance*)userdata)->getInstanceID();
     return MPInterface::Get().SendAck(inst, data, len, timestamp);
 }
 
 int MP_RecvHostPacket(u8* data, u64* timestamp, void* userdata)
 {
+    if (ConsoleSlot* slot = ConsoleSlot::From(userdata)) return slot->MPRecvHostPacket(data, timestamp);
     int inst = ((EmuInstance*)userdata)->getInstanceID();
     return MPInterface::Get().RecvHostPacket(inst, data, timestamp);
 }
 
 u16 MP_RecvReplies(u8* data, u64 timestamp, u16 aidmask, void* userdata)
 {
+    if (ConsoleSlot* slot = ConsoleSlot::From(userdata)) return slot->MPRecvReplies(data, timestamp, aidmask);
     int inst = ((EmuInstance*)userdata)->getInstanceID();
     return MPInterface::Get().RecvReplies(inst, data, timestamp, aidmask);
 }
@@ -514,6 +539,7 @@ u16 MP_RecvReplies(u8* data, u64 timestamp, u16 aidmask, void* userdata)
 
 int Net_SendPacket(u8* data, int len, void* userdata)
 {
+    if (ConsoleSlot::From(userdata)) return 0;   // no internet in online sessions
     int inst = ((EmuInstance*)userdata)->getInstanceID();
     net.SendPacket(data, len, inst);
     return 0;
@@ -521,6 +547,7 @@ int Net_SendPacket(u8* data, int len, void* userdata)
 
 int Net_RecvPacket(u8* data, void* userdata)
 {
+    if (ConsoleSlot::From(userdata)) return 0;
     int inst = ((EmuInstance*)userdata)->getInstanceID();
     return net.RecvPacket(data, inst);
 }
@@ -528,16 +555,19 @@ int Net_RecvPacket(u8* data, void* userdata)
 
 void Mic_Start(void* userdata)
 {
+    if (ConsoleSlot::From(userdata)) return;
     return ((EmuInstance*)userdata)->micStart();
 }
 
 void Mic_Stop(void* userdata)
 {
+    if (ConsoleSlot::From(userdata)) return;
     return ((EmuInstance*)userdata)->micStop();
 }
 
 int Mic_ReadInput(s16* data, int maxlength, void* userdata)
 {
+    if (ConsoleSlot* slot = ConsoleSlot::From(userdata)) return slot->MicReadInput(data, maxlength);
     return ((EmuInstance*)userdata)->micReadInput(data, maxlength);
 }
 
@@ -566,21 +596,25 @@ static const int hotkeyMap[] = {
 
 bool Addon_KeyDown(KeyType type, void* userdata)
 {
+    if (ConsoleSlot::From(userdata)) return false;
     return ((EmuInstance*)userdata)->inputHotkeyDown(hotkeyMap[type]);
 }
 
 void Addon_RumbleStart(u32 len, void* userdata)
 {
+    if (ConsoleSlot::From(userdata)) return;
     ((EmuInstance*)userdata)->inputRumbleStart(len);
 }
 
 void Addon_RumbleStop(void* userdata)
 {
+    if (ConsoleSlot::From(userdata)) return;
     ((EmuInstance*)userdata)->inputRumbleStop();
 }
 
 float Addon_MotionQuery(MotionQueryType type, void* userdata)
 {
+    if (ConsoleSlot::From(userdata)) return 0.0f;
     return ((EmuInstance*)userdata)->inputMotionQuery(type);
 }
 

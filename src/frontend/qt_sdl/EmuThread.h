@@ -30,6 +30,8 @@
 #include <variant>
 #include <optional>
 #include <list>
+#include <memory>
+#include <string>
 
 #include "NDSCart.h"
 #include "GBACart.h"
@@ -37,7 +39,27 @@
 namespace melonDS
 {
 class NDS;
+namespace RollbackNet
+{
+class OnlineSession;
+class P2PLink;
 }
+}
+
+// What the UI hands the emulation thread to start an online session: the
+// connection to the other player (it may still be opening) and the
+// preferences; the emulation thread adds the game, the save and the
+// firmware settings.
+struct NetplayStartRequest
+{
+    std::shared_ptr<melonDS::RollbackNet::P2PLink> Link;
+    bool Host = false;
+    int InputDelay = -1;        // -1: from the round trip
+    int MaxPrediction = 8;
+    bool KeepSave = false;      // write the save this player's console ends with
+    std::string PlayerName;     // the online name (also the DS nickname); empty: the firmware nickname
+};
+Q_DECLARE_METATYPE(std::shared_ptr<NetplayStartRequest>)
 
 class EmuInstance;
 class MainWindow;
@@ -50,6 +72,7 @@ class EmuThread : public QThread
 
 public:
     explicit EmuThread(EmuInstance* inst, QObject* parent = nullptr);
+    ~EmuThread() override;     // defined where OnlineSession is complete
 
     void attachWindow(MainWindow* window);
     void detachWindow(MainWindow* window);
@@ -84,6 +107,10 @@ public:
         msg_ImportSavefile,
 
         msg_EnableCheats,
+
+        msg_NetplayStart,
+        msg_NetplayLeave,
+        msg_NetplayChat,
     };
 
     struct Message
@@ -127,6 +154,12 @@ public:
 
     void enableCheats(bool enable);
 
+    // online rollback sessions (to be called from the UI thread)
+    void netplayStart(std::shared_ptr<NetplayStartRequest> req);
+    void netplayLeave();
+    void netplaySendChat(const QString& text);
+    bool netplayActive() const { return netActive.load(); }
+
     bool emuIsRunning();
     bool emuIsActive();
 
@@ -160,11 +193,21 @@ signals:
 
     void syncVolumeLevel();
 
+    void netplayStatus(QString text);
+    void netplayChat(QString name, QString text, bool notice);
+    void netplayGameStarted();
+    void netplayEnded(QString reason);
+
 private:
     void handleMessages();
 
     void updateRenderer();
     void compileShaders();
+
+    void netplayBegin(std::shared_ptr<NetplayStartRequest> req);
+    void netplayStep();
+    void netplayShow();
+    void netplayFinish();
 
     enum EmuStatusKind
     {
@@ -192,6 +235,19 @@ private:
     EmuInstance* emuInstance;
 
     int autoScreenSizing;
+
+    // online session (see netplayStep)
+    std::unique_ptr<melonDS::RollbackNet::OnlineSession> netSession;
+    std::shared_ptr<NetplayStartRequest> netRequest;
+    std::atomic<bool> netActive {false};
+    melonDS::NDS* netSavedNDS = nullptr;
+    bool netShowing = false;
+    bool netSavedActive = false;
+    int netSavedStatus = 0;
+    QString netLastStatus;
+    double netNextFrame = 0;
+    double netMeasureStart = 0;
+    unsigned netFrames = 0;
 
     int lastVideoRenderer = -1;
 

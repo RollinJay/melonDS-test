@@ -714,6 +714,25 @@ void GPU2D::CalculateWindowMask(u8* windowMask, const u8* objWindow)
     }
 }
 
+void GPU2D::SkipScanline()
+{
+    // as SoftRenderer2D::DrawScanline would get to CalculateWindowMask; there, a
+    // window's horizontal state ends the line set if it starts right of where it ends
+    if (!Enabled || ForcedBlank || !(DispCnt & 0xE000))
+        return;
+
+    if (DispCnt & (1<<14))
+    {
+        if (Win1Coords[0] > Win1Coords[1]) Win1Active |= 0x2;
+        else                               Win1Active &= ~0x2;
+    }
+    if (DispCnt & (1<<13))
+    {
+        if (Win0Coords[0] > Win0Coords[1]) Win0Active |= 0x2;
+        else                               Win0Active &= ~0x2;
+    }
+}
+
 void GPU2D::GetBGVRAM(u8*& data, u32& mask) const
 {
     if (Num == 0)

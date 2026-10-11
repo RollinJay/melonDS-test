@@ -60,6 +60,8 @@ set(SOURCES_QT_SDL
 
     LANDialog.cpp
     NetplayDialog.cpp
+    NakamaClient.cpp
+    NetplayOnlineDialog.cpp
 )
 
 option(USE_QT6 "Use Qt 6 instead of Qt 5" ON)
@@ -98,6 +100,8 @@ add_subdirectory("../../net"
     ${CMAKE_BINARY_DIR}/net)
 
 target_link_libraries(melonDS PRIVATE net-utils)
+# online rollback netplay (src/net/rollback)
+target_link_libraries(melonDS PRIVATE rollback-netplay)
 
 if (WIN32)
     target_link_libraries(melonDS PUBLIC opengl32)

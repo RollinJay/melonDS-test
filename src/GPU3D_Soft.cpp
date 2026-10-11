@@ -109,6 +109,7 @@ SoftRenderer3D::SoftRenderer3D(melonDS::GPU3D& gpu3D, SoftRenderer& parent) noex
 
 SoftRenderer3D::~SoftRenderer3D()
 {
+    StopAsyncThread();
     StopRenderThread();
 
     Platform::Semaphore_Free(Sema_RenderStart);
@@ -118,14 +119,130 @@ SoftRenderer3D::~SoftRenderer3D()
 
 void SoftRenderer3D::Reset()
 {
+    CancelAsyncRender();
     memset(ColorBuffer, 0, BufferSize * 2 * 4);
     memset(DepthBuffer, 0, BufferSize * 2 * 4);
     memset(AttrBuffer, 0, BufferSize * 2 * 4);
 
     PrevIsShadowMask = false;
+    RenderPending = false;
+    ColorBufferValid = false;
 
     SetupRenderThread();
     EnableRenderThread();
+}
+
+void SoftRenderer3D::DoRollbackState(Savestate* file)
+{
+    // A render still in flight (SetAsyncRender) counts as pending. A pending image
+    // is rendered again before it is read, so only an image that is not pending
+    // is kept: the first layer of the color buffer, which GetLine() reads.
+    file->VarBool(&ColorBufferValid);
+    file->VarBool(&RenderPending);
+    if (!RenderPending)
+        file->VarArray(ColorBuffer, BufferSize * sizeof(u32));
+
+    // a render left pending reads the textures as they were at scanline 215,
+    // which loading a state clears (GPU::ResetVRAMCache)
+    if (RenderPending)
+    {
+        file->VarArray(GPU.VRAMFlat_Texture, sizeof(GPU.VRAMFlat_Texture));
+        file->VarArray(GPU.VRAMFlat_TexPal, sizeof(GPU.VRAMFlat_TexPal));
+    }
+}
+
+void SoftRenderer3D::RenderPendingFrame()
+{
+    RenderPending = false;
+    ClearBuffers();
+    RenderPolygons(false, &GPU3D.RenderPolygonRAM[0], GPU3D.RenderNumPolygons);
+    ColorBufferValid = true;
+}
+
+void SoftRenderer3D::SetAsyncRender(bool enable)
+{
+    // a render in flight finishes anyway, and is taken where it is needed
+    AsyncEnabled = enable;
+}
+
+void SoftRenderer3D::StartAsyncRender()
+{
+    if (!AsyncThread.joinable())
+        AsyncThread = std::thread([this] { AsyncLoop(); });
+
+    RenderPending = true;
+    ColorBufferValid = false;
+    AsyncCancel = false;
+    {
+        std::lock_guard lock(AsyncLock);
+        AsyncStart = true;
+        AsyncDone = false;
+    }
+    AsyncCV.notify_all();
+    AsyncInFlight = true;
+}
+
+void SoftRenderer3D::FinishAsyncRender()
+{
+    if (!AsyncInFlight)
+        return;
+    {
+        std::unique_lock lock(AsyncLock);
+        AsyncCV.wait(lock, [this] { return AsyncDone; });
+    }
+    AsyncInFlight = false;
+    // (the flag goes back down, for the renders done on this thread)
+    if (AsyncCancel.exchange(false))
+        return;     // the image is not complete: it stays pending
+    RenderPending = false;
+    ColorBufferValid = true;
+}
+
+void SoftRenderer3D::CancelAsyncRender()
+{
+    if (!AsyncInFlight)
+        return;
+    AsyncCancel = true;
+    FinishAsyncRender();
+}
+
+void SoftRenderer3D::AsyncLoop()
+{
+    for (;;)
+    {
+        {
+            std::unique_lock lock(AsyncLock);
+            AsyncCV.wait(lock, [this] { return AsyncStart || AsyncQuit; });
+            if (AsyncQuit)
+                return;
+            AsyncStart = false;
+        }
+
+        // what this reads (the render polygon list and registers, the texture
+        // caches) stays as it is until the image is taken or the render cancelled
+        ClearBuffers();
+        RenderPolygons(false, &GPU3D.RenderPolygonRAM[0], GPU3D.RenderNumPolygons);
+
+        {
+            std::lock_guard lock(AsyncLock);
+            AsyncDone = true;
+        }
+        AsyncCV.notify_all();
+    }
+}
+
+void SoftRenderer3D::StopAsyncThread()
+{
+    CancelAsyncRender();
+    if (AsyncThread.joinable())
+    {
+        {
+            std::lock_guard lock(AsyncLock);
+            AsyncQuit = true;
+        }
+        AsyncCV.notify_all();
+        AsyncThread.join();
+    }
 }
 
 void SoftRenderer3D::SetThreaded(bool threaded) noexcept
@@ -1722,6 +1839,10 @@ void SoftRenderer3D::RenderPolygons(bool threaded, Polygon** polygons, int npoly
 
     for (s32 y = 1; y < 192; y++)
     {
+        // an asynchronous render (SetAsyncRender) may be cancelled before it is done
+        if (AsyncCancel.load(std::memory_order_relaxed))
+            return;
+
         RenderScanline(y, j);
         ScanlineFinalPass(y-1);
 
@@ -1745,6 +1866,9 @@ void SoftRenderer3D::FinishRendering()
 
 void SoftRenderer3D::RenderFrame()
 {
+    // the texture caches are about to change: the last image must be done
+    FinishAsyncRender();
+
     auto textureDirty = GPU.VRAMDirty_Texture.DeriveState(GPU.VRAMMap_Texture, GPU);
     auto texPalDirty = GPU.VRAMDirty_TexPal.DeriveState(GPU.VRAMMap_TexPal, GPU);
 
@@ -1758,10 +1882,22 @@ void SoftRenderer3D::RenderFrame()
         // "Render thread, you're up! Get moving."
         Platform::Semaphore_Post(Sema_RenderStart);
     }
-    else if (!FrameIdentical)
+    else if (Headless)
     {
-        ClearBuffers();
-        RenderPolygons(false, &GPU3D.RenderPolygonRAM[0], GPU3D.RenderNumPolygons);
+        // render when (if) a line of it is read: see GetLine()
+        // the texture caches stay as they are now until the next RenderFrame()
+        if (!(FrameIdentical && ColorBufferValid))
+        {
+            RenderPending = true;
+            ColorBufferValid = false;
+        }
+    }
+    else if (!FrameIdentical || !ColorBufferValid)
+    {
+        if (AsyncEnabled)
+            StartAsyncRender();
+        else
+            RenderPendingFrame();
     }
 }
 
@@ -1806,6 +1942,10 @@ void SoftRenderer3D::RenderThreadFunc()
 
 u32* SoftRenderer3D::GetLine(int line)
 {
+    FinishAsyncRender();
+    if (RenderPending)
+        RenderPendingFrame();
+
     if (GPU3D.AbortFrame)
     {
         // TODO this isn't accurate

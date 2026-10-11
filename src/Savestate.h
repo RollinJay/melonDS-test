@@ -49,6 +49,14 @@ public:
 
     bool Saving;
 
+    // Set for the in-memory states of rollback netplay, which saves one every frame.
+    // Such a state stores only the 4 MB of main RAM a DS has, instead of the 16 MB
+    // always reserved (DSi states are not affected), plus what the software renderer
+    // carries from one frame to the next (see Renderer::DoRollbackState), so that
+    // loading it gives exactly the console it was saved from. A state saved this way
+    // must be loaded with it set too.
+    bool RollbackState = false;
+
     u32 CurSection;
 
     void Section(const char* magic);

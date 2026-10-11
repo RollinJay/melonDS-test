@@ -259,7 +259,10 @@ void NDSCartSlot::DoSavestate(Savestate* file) noexcept
     if (Cart)
     {
         carttype = Cart->Type();
-        cartchk = Cart->Checksum();
+        // a rollback state (Savestate::RollbackState) never changes carts, and
+        // the checksum reads the cart's whole ARM9 and ARM7 binaries
+        if (!file->RollbackState)
+            cartchk = Cart->Checksum();
     }
 
     if (file->Saving)

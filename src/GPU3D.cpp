@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <algorithm>
+#include <bitset>
 #include "NDS.h"
 #include "GPU.h"
 #include "FIFO.h"
@@ -404,20 +405,30 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
     file->Var32(&FlushRequest);
     file->Var32(&FlushAttributes);
 
-    for (Vertex& vtx : VertexRAM)
+    // one polygon: its vertices are saved as indices into VertexRAM
+    auto dopolygon = [this, file](Polygon* poly)
     {
-        vtx.DoSavestate(file);
-    }
-
-    for(int i = 0; i < 2048*2; i++)
-    {
-        Polygon* poly = &PolygonRAM[i];
+        // Rollback states keep only the entries of the polygon's own vertices.
+        // Those past NumVertices are left from whatever polygon used the slot
+        // before, possibly in frames a rollback undid: they are never read, but
+        // would make states that emulate the same thing differ.
+        const bool own = file->RollbackState;
+        if (own)
+        {
+            file->Var32(&poly->NumVertices);
+            if (poly->NumVertices > 10)
+            {
+                file->Error = true;
+                return;
+            }
+        }
+        const u32 count = own ? poly->NumVertices : 10;
 
         // this is a bit ugly, but eh
         // we can't save the pointers as-is, that's a bad idea
         if (file->Saving)
         {
-            for (int j = 0; j < 10; j++)
+            for (u32 j = 0; j < count; j++)
             {
                 Vertex* ptr = poly->Vertices[j];
                 u32 index = ptr ? (u32)(ptr - &VertexRAM[0]) : UINT32_MAX;
@@ -426,18 +437,26 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
         }
         else
         {
-            for (int j = 0; j < 10; j++)
+            for (u32 j = 0; j < count; j++)
             {
                 u32 index = UINT32_MAX;
                 file->Var32(&index);
                 poly->Vertices[j] = index == UINT32_MAX ? nullptr : &VertexRAM[index];
             }
+            for (u32 j = count; j < 10; j++)
+                poly->Vertices[j] = nullptr;
         }
 
-        file->Var32(&poly->NumVertices);
+        if (!own)
+            file->Var32(&poly->NumVertices);
 
-        file->VarArray(poly->FinalZ, sizeof(s32)*10);
-        file->VarArray(poly->FinalW, sizeof(s32)*10);
+        file->VarArray(poly->FinalZ, sizeof(s32)*count);
+        file->VarArray(poly->FinalW, sizeof(s32)*count);
+        if (!file->Saving)
+        {
+            for (u32 j = count; j < 10; j++)
+                poly->FinalZ[j] = poly->FinalW[j] = 0;
+        }
         file->Bool32(&poly->WBuffer);
 
         file->Var32(&poly->Attr);
@@ -475,6 +494,107 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
             }
 
             if (poly->YBottom > 192) poly->Degenerate = true;
+        }
+    };
+
+    if (!file->RollbackState)
+    {
+        for (Vertex& vtx : VertexRAM)
+        {
+            vtx.DoSavestate(file);
+        }
+
+        for (int i = 0; i < 2048*2; i++)
+        {
+            dopolygon(&PolygonRAM[i]);
+        }
+    }
+    else
+    {
+        // Rollback states (Savestate::RollbackState) keep only the vertices and
+        // polygons that can still be read: those of the frame being built (the
+        // first NumVertices and NumPolygons of bank CurRAMBank) and those the
+        // render list points to, with their vertices. The others are written
+        // again before anything reads them. This halves the time a save takes.
+        const u32 vbase = CurRAMBank ? 6144 : 0;
+        const u32 pbase = CurRAMBank ? 2048 : 0;
+        if (NumVertices > 6144 || NumPolygons > 2048)
+        {
+            file->Error = true;
+            return;
+        }
+
+        u32 rendercount = RenderNumPolygons;
+        file->Var32(&rendercount);
+        if (rendercount > 2048)
+        {
+            file->Error = true;
+            return;
+        }
+
+        // the vertices of the render list's polygons, as a range of VertexRAM; the
+        // vertices in it that none of them uses are saved as zeroes, for the same
+        // reason as the entries past a polygon's own vertices
+        u32 rvfirst = 0, rvend = 0;
+        std::bitset<6144*2> used;
+        if (file->Saving)
+        {
+            u32 lo = UINT32_MAX, hi = 0;
+            for (u32 i = 0; i < rendercount; i++)
+            {
+                const Polygon* poly = RenderPolygonRAM[i];
+                if (!poly) continue;
+                for (u32 j = 0; j < poly->NumVertices && j < 10; j++)
+                {
+                    if (!poly->Vertices[j]) continue;
+                    u32 index = (u32)(poly->Vertices[j] - &VertexRAM[0]);
+                    used.set(index);
+                    lo = std::min(lo, index);
+                    hi = std::max(hi, index + 1);
+                }
+            }
+            if (lo < hi)
+            {
+                rvfirst = lo;
+                rvend = hi;
+            }
+        }
+        file->Var32(&rvfirst);
+        file->Var32(&rvend);
+        if (rvfirst > rvend || rvend > 6144*2)
+        {
+            file->Error = true;
+            return;
+        }
+
+        for (u32 i = 0; i < NumVertices; i++)
+            VertexRAM[vbase + i].DoSavestate(file);
+        for (u32 i = rvfirst; i < rvend; i++)
+        {
+            if (file->Saving && !used.test(i))
+            {
+                Vertex blank {};
+                blank.DoSavestate(file);
+            }
+            else
+                VertexRAM[i].DoSavestate(file);
+        }
+
+        for (u32 i = 0; i < NumPolygons; i++)
+            dopolygon(&PolygonRAM[pbase + i]);
+        for (u32 i = 0; i < rendercount; i++)
+        {
+            u32 index = UINT32_MAX;
+            if (file->Saving && RenderPolygonRAM[i])
+                index = (u32)(RenderPolygonRAM[i] - &PolygonRAM[0]);
+            file->Var32(&index);
+            if (index == UINT32_MAX) continue;
+            if (index >= 2048*2)
+            {
+                file->Error = true;
+                return;
+            }
+            dopolygon(&PolygonRAM[index]);
         }
     }
 
@@ -1132,6 +1252,13 @@ void GPU3D::SubmitPolygon() noexcept
 
             vtx->HiresPosition[0] = posX & 0x1FFF;
             vtx->HiresPosition[1] = posY & 0xFFF;
+        }
+        else
+        {
+            // the polygon is not rendered; a vertex made by clipping would
+            // otherwise keep whatever was in memory (savestates hold it)
+            vtx->HiresPosition[0] = 0;
+            vtx->HiresPosition[1] = 0;
         }
     }
 

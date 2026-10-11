@@ -61,6 +61,7 @@
 #include "Net.h"
 
 #include "CLI.h"
+#include "NetplayOnlineDialog.h"
 
 #include "Net_PCap.h"
 #include "Net_Slirp.h"
@@ -418,10 +419,26 @@ int main(int argc, char** argv)
 
         if (memberSyntaxUsed) printf("Warning: use the a.zip|b.nds format at your own risk!\n");
 
-        win->preloadROMs(dsfile, gbafile, options->boot);
+        bool loaded = win->preloadROMs(dsfile, gbafile, options->boot);
 
         if (options->fullscreen)
             win->toggleFullscreen();
+
+        if (options->netplayHost.has_value() || options->netplayJoin.has_value())
+        {
+            if (!loaded)
+                printf("netplay: give the ROM to play on the command line\n");
+            else
+            {
+                NetplayOnlineDialog* dlg = NetplayOnlineDialog::openDlg(win, win->getEmuInstance());
+                dlg->startDirect(options->netplayHost.has_value(),
+                                 options->netplayHost.value_or(0),
+                                 options->netplayJoin.value_or(QString()),
+                                 options->netplayCode.value_or(QString()),
+                                 options->netplayDelay.value_or(-2),
+                                 options->netplayExit);
+            }
+        }
     }
 
     int ret = melon.exec();

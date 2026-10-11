@@ -1033,6 +1033,9 @@ void SPU::BufferAudio()
     blip_read_samples(BlipLeft, temp, avail, true);
     blip_read_samples(BlipRight, temp + 1, avail, true);
 
+    if (!OutputEnabled)
+        return;
+
     Platform::Mutex_Lock(AudioLock);
     for (int i = 0; i < avail * 2; i += 2)
     {

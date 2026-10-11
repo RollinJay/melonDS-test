@@ -648,7 +648,8 @@ bool NDS::DoSavestate(Savestate* file)
         }
     }
 
-    file->VarArray(MainRAM, MainRAMMaxSize);
+    // a DS only has 4 MB of main RAM (DSi RAM size can change at run time, so it always saves 16 MB)
+    file->VarArray(MainRAM, (file->RollbackState && ConsoleType == 0) ? 0x400000 : MainRAMMaxSize);
     file->VarArray(SharedWRAM, SharedWRAMSize);
     file->VarArray(ARM7WRAM, ARM7WRAMSize);
 
@@ -726,13 +727,32 @@ bool NDS::DoSavestate(Savestate* file)
 
     file->Bool32(&RunningGame);
 
+    if (file->RollbackState)
+    {
+        // Ordinary savestates leave out the divider's and square root unit's
+        // operands and results. A game that reads a result after a state is
+        // loaded then gets whatever the unit held before the load, so rollback
+        // netplay keeps them.
+        file->Section("NDSR");
+        file->VarArray(DivNumerator, sizeof(DivNumerator));
+        file->VarArray(DivDenominator, sizeof(DivDenominator));
+        file->VarArray(DivQuotient, sizeof(DivQuotient));
+        file->VarArray(DivRemainder, sizeof(DivRemainder));
+        file->VarArray(SqrtVal, sizeof(SqrtVal));
+        file->Var32(&SqrtRes);
+    }
+
     if (!file->Saving)
     {
         // 'dept of redundancy dept'
         // but we do need to update the mappings
         MapSharedWRAM(WRAMCnt);
 
-        InitTimings();
+        // A rollback load skips InitTimings in DS mode: the timings it sets never
+        // change after a reset, and rebuilding them takes much of a load. The
+        // ones that do change (GBA slot, wifi) are set again just below.
+        if (!(file->RollbackState && ConsoleType == 0))
+            InitTimings();
         SetGBASlotTimings();
 
         UpdateWifiTimings();
@@ -763,8 +783,16 @@ bool NDS::DoSavestate(Savestate* file)
         SPU.SetPowerCnt(PowerControl7 & 0x0001);
         Wifi.SetPowerCnt(PowerControl7 & 0x0002);
 
+        // the CPUs' pending-IRQ flags derive from IME/IE/IF and are not saved:
+        // without this, an IRQ pending when the state was replaced would still fire
+        UpdateIRQ(0);
+        UpdateIRQ(1);
+
 #ifdef JIT_ENABLED
-        JIT.Reset();
+        // with the JIT off, a rollback load leaves its (unused) caches alone:
+        // clearing them takes most of a load
+        if (!(file->RollbackState && !EnableJIT))
+            JIT.Reset();
 #endif
     }
 
@@ -922,8 +950,7 @@ void NDS::RunSystemSleep(u64 timestamp)
     }
 }
 
-template <CPUExecuteMode cpuMode>
-u32 NDS::RunFrame()
+void NDS::BeginFrame()
 {
     Current = this;
 
@@ -932,22 +959,63 @@ u32 NDS::RunFrame()
     GPU.TotalScanlines = 0;
 
     LagFrameFlag = true;
-    bool runFrame = Running && !(CPUStop & CPUStop_Sleep);
+    FramePhase = FramePhase_Top;
+}
+
+template <CPUExecuteMode cpuMode>
+bool NDS::RunFrameSlice(u64 limit)
+{
+    // Runs the current frame until it ends or until the system clock reaches `limit`.
+    // RunFrame() calls this once with no limit. Rollback netplay calls it repeatedly
+    // with a limit, to run several consoles side by side in one thread.
+    // Returns true when the frame is over.
+
+    Current = this;
+
     while (Running)
     {
-        u64 frametarget = SysTimestamp + 560190;
+        if (FramePhase == FramePhase_Top)
+        {
+            FrameTarget = SysTimestamp + 560190;
 
-        if (CPUStop & CPUStop_Sleep)
+            if (CPUStop & CPUStop_Sleep)
+            {
+                FramePhase = FramePhase_Sleep;
+            }
+            else
+            {
+                if (cpuMode == CPUExecuteMode::InterpreterGDB)
+                {
+                    ARM9.CheckGdbIncoming();
+                    ARM7.CheckGdbIncoming();
+                }
+
+                if (!(CPUStop & CPUStop_Wakeup))
+                {
+                    GPU.StartFrame();
+                }
+                CPUStop &= ~CPUStop_Wakeup;
+
+                FramePhase = FramePhase_Run;
+            }
+        }
+
+        if (FramePhase == FramePhase_Sleep)
         {
             // we are running in sleep mode
             // we still need to run the RTC during this mode
             // we also keep outputting audio, so that frontends using audio sync don't skyrocket to 1000+FPS
 
-            while (Running && (SysTimestamp < frametarget))
+            while (Running && (SysTimestamp < FrameTarget))
             {
+                if (SysTimestamp >= limit)
+                    return false;
+
                 u64 target = NextTargetSleep();
-                if (target > frametarget)
-                    target = frametarget;
+                if (target > FrameTarget)
+                    target = FrameTarget;
+                if (target > limit)
+                    target = limit;
 
                 ARM9Timestamp = target << ARM9ClockShift;
                 ARM7Timestamp = target;
@@ -960,26 +1028,19 @@ u32 NDS::RunFrame()
                     break;
             }
 
-            if (SysTimestamp >= frametarget)
+            if (SysTimestamp >= FrameTarget)
                 GPU.BlankFrame();
         }
         else
         {
-            if (cpuMode == CPUExecuteMode::InterpreterGDB)
-            {
-                ARM9.CheckGdbIncoming();
-                ARM7.CheckGdbIncoming();
-            }
-
-            if (!(CPUStop & CPUStop_Wakeup))
-            {
-                GPU.StartFrame();
-            }
-            CPUStop &= ~CPUStop_Wakeup;
-
             while (Running && GPU.TotalScanlines==0)
             {
+                if (SysTimestamp >= limit)
+                    return false;
+
                 u64 target = NextTarget();
+                if (target > limit)
+                    target = limit;
                 ARM9Target = target << ARM9ClockShift;
                 CurCPU = 0;
 
@@ -1046,6 +1107,8 @@ u32 NDS::RunFrame()
             }
         }
 
+        FramePhase = FramePhase_Top;
+
         if (GPU.TotalScanlines == 0)
             continue;
 
@@ -1059,6 +1122,11 @@ u32 NDS::RunFrame()
         break;
     }
 
+    return true;
+}
+
+u32 NDS::EndFrame()
+{
     // Ensure the last audio samples produced for this frame are available to the frontend immediately
     SPU.BufferAudio();
 
@@ -1072,6 +1140,14 @@ u32 NDS::RunFrame()
         return GPU.TotalScanlines;
     else
         return 263;
+}
+
+template <CPUExecuteMode cpuMode>
+u32 NDS::RunFrame()
+{
+    BeginFrame();
+    RunFrameSlice<cpuMode>(UINT64_MAX);
+    return EndFrame();
 }
 
 u32 NDS::RunFrame()
@@ -1089,6 +1165,24 @@ u32 NDS::RunFrame()
 #endif
     {
         return RunFrame<CPUExecuteMode::Interpreter>();
+    }
+}
+
+bool NDS::RunFrameSlice(u64 limit)
+{
+#ifdef JIT_ENABLED
+    if (EnableJIT)
+        return RunFrameSlice<CPUExecuteMode::JIT>(limit);
+    else
+#endif
+#ifdef GDBSTUB_ENABLED
+    if (EnableGDBStub)
+    {
+        return RunFrameSlice<CPUExecuteMode::InterpreterGDB>(limit);
+    } else
+#endif
+    {
+        return RunFrameSlice<CPUExecuteMode::Interpreter>(limit);
     }
 }
 

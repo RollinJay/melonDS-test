@@ -42,6 +42,13 @@ void SoftRenderer2D::Reset()
     NumSprites = 0;
 }
 
+void SoftRenderer2D::DoRollbackState(Savestate* file)
+{
+    file->VarArray(OBJLine, sizeof(OBJLine));
+    file->VarArray(OBJWindow, sizeof(OBJWindow));
+    file->Var32(&NumSprites);
+}
+
 u32 SoftRenderer2D::ColorComposite(int i, u32 val1, u32 val2) const
 {
     u32 coloreffect = 0;

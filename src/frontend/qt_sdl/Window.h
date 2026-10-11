@@ -133,6 +133,9 @@ private slots:
     void onMPNewInstance();
     void onLANStartHost();
     void onLANStartClient();
+    void onOnlinePlay();
+    void onNetplayStarted();
+    void onNetplayEnded(QString reason);
     void onNPStartHost();
     void onNPStartClient();
     void onNPTest();
@@ -198,6 +201,7 @@ private:
     QString pickFileFromArchive(QString archiveFileName);
     QStringList pickROM(bool gba);
     void updateCartInserted(bool gba);
+    QList<QAction*> netplayLockedActions();
 
     void createScreenPanel();
 
@@ -257,6 +261,7 @@ public:
     QAction* actMPNewInstance;
     QAction* actLANStartHost;
     QAction* actLANStartClient;
+    QAction* actOnlinePlay;
     QAction* actNPStartHost;
     QAction* actNPStartClient;
     QAction* actNPTest;

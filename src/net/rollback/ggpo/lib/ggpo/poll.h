@@ -1,0 +1,58 @@
+/* -----------------------------------------------------------------------
+ * GGPO.net (http://ggpo.net)  -  Copyright 2009 GroundStorm Studios, LLC.
+ *
+ * Use of this software is governed by the MIT license that can be found
+ * in the LICENSE file.
+ */
+
+#ifndef _POLL_H
+#define _POLL_H
+
+#include "static_buffer.h"
+
+/*
+ * melonDS: the Windows event handles are gone. Nothing registered one but a
+ * placeholder; the UDP layer is polled as a loop sink, without blocking.
+ */
+
+class IPollSink {
+public:
+   virtual ~IPollSink() { }
+   virtual bool OnMsgPoll(void *) { return true; }
+   virtual bool OnPeriodicPoll(void *, int ) { return true; }
+   virtual bool OnLoopPoll(void *) { return true; }
+};
+
+class Poll {
+public:
+   Poll(void);
+   void RegisterMsgLoop(IPollSink *sink, void *cookie = NULL);
+   void RegisterPeriodic(IPollSink *sink, int interval, void *cookie = NULL);
+   void RegisterLoop(IPollSink *sink, void *cookie = NULL);
+
+   bool Pump(int timeout);
+
+protected:
+   struct PollSinkCb {
+      IPollSink   *sink;
+      void        *cookie;
+      PollSinkCb() : sink(NULL), cookie(NULL) { }
+      PollSinkCb(IPollSink *s, void *c) : sink(s), cookie(c) { }
+   };
+
+   struct PollPeriodicSinkCb : public PollSinkCb {
+      int         interval;
+      int         last_fired;
+      PollPeriodicSinkCb() : PollSinkCb(NULL, NULL), interval(0), last_fired(0) { }
+      PollPeriodicSinkCb(IPollSink *s, void *c, int i) :
+         PollSinkCb(s, c), interval(i), last_fired(0) { }
+   };
+
+   unsigned int      _start_time;
+
+   StaticBuffer<PollSinkCb, 16>          _msg_sinks;
+   StaticBuffer<PollSinkCb, 16>          _loop_sinks;
+   StaticBuffer<PollPeriodicSinkCb, 16>  _periodic_sinks;
+};
+
+#endif

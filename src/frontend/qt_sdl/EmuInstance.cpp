@@ -1969,13 +1969,28 @@ bool EmuInstance::loadROM(QStringList filepath, bool reset, QString& errorstr)
 
     cartType = 0;
     ndsSave = std::make_unique<SaveManager>(savname);
+    lastROMPath = filepath;
 
     return true; // success
+}
+
+bool EmuInstance::readLastROM(std::vector<u8>& data, std::string& name)
+{
+    // read again from the file: the cart in memory has been through ParseROM
+    std::unique_ptr<u8[]> filedata;
+    u32 filelen = 0;
+    std::string basepath, romname;
+    if (lastROMPath.isEmpty() || !loadROMData(lastROMPath, filedata, filelen, basepath, romname))
+        return false;
+    data.assign(filedata.get(), filedata.get() + filelen);
+    name = romname;
+    return true;
 }
 
 void EmuInstance::ejectCart()
 {
     ndsSave = nullptr;
+    lastROMPath.clear();
 
     if (emuIsActive())
     {

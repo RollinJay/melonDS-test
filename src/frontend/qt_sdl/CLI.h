@@ -34,6 +34,13 @@ struct CommandLineOptions
     std::optional<QString> gbaRomArchivePath;
     bool fullscreen;
     bool boot;
+
+    // a direct online session started at launch (with the ROM given)
+    std::optional<int> netplayHost;         // UDP port to wait on
+    std::optional<QString> netplayJoin;     // host:port
+    std::optional<QString> netplayCode;
+    std::optional<int> netplayDelay;
+    bool netplayExit = false;               // quit when the session ends
 };
 
 extern CommandLineOptions* ManageArgs(QApplication& melon);
