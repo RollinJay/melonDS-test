@@ -66,6 +66,13 @@ public:
     // -1 from the round trip, -2 the settings'. quitAfter: quit melonDS when it ends.
     bool startDirect(bool host, int port, const QString& address, const QString& code, int delay, bool quitAfter);
 
+    // A server profile given by a launcher (the format of IKEMEN GO's servers.json):
+    // server, key, device id, name and STUN servers in place of the online settings,
+    // for this run only. False (and why) if the file holds no such profile.
+    static bool useServerProfile(const QString& path, const QString& id, QString& error);
+    // Connects at start; with quick, asks for a quick match once in the game's channel.
+    void connectAtStart(bool quick, bool quitAfter);
+
 private slots:
     void onConnectClicked();
     void onSettingsClicked();
@@ -146,6 +153,7 @@ private:
     bool sessionActive = false;
     int delayOverride = -2;
     bool quitAfterSession = false;
+    bool quickAfterJoin = false;
 };
 
 #endif // NETPLAYONLINEDIALOG_H

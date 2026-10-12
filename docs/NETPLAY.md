@@ -167,6 +167,23 @@ current game at the bottom.
    the last rollback.
 5. *Leave the game* ends the session for both players.
 
+### From a launcher
+
+A launcher, such as Nakama Matchmaker, can start melonDS on its own server and
+account, so that the player needs no settings:
+
+```sh
+melonDS --netplay-config servers.json --netplay-online --netplay-quick --netplay-exit game.nds
+```
+
+`--netplay-config` names a file of server profiles in the format of IKEMEN
+GO's `servers.json` (host, port, server key, TLS, device id, name, STUN
+servers); `--netplay-server ID` picks one of its profiles instead of its
+default. melonDS uses that profile in place of the online settings for this
+run only and saves none of it; the device id makes it the launcher's account.
+`--netplay-online` opens the online window and connects, which joins the
+loaded game's channel; `--netplay-quick` then asks for a quick match there.
+
 ### Direct connection
 
 One player hosts: Direct connection..., *Host*, a UDP port that the other

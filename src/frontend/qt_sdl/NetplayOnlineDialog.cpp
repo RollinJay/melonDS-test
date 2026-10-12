@@ -22,6 +22,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QFile>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -71,6 +72,16 @@ static constexpr qint64 OP_P2P_SIGNAL = 0x494B5347;
 
 static NetplayOnlineDialog* currentDlg = nullptr;
 
+// a launcher's server profile, which replaces the server settings for this run
+struct LauncherProfile
+{
+    bool Set = false;
+    NakamaClient::Server Server;
+    QStringList Stun;
+    QString Name, Region, DeviceID;
+};
+static LauncherProfile launcherProfile;
+
 struct NetplayOnlineDialog::Settings
 {
     NakamaClient::Server Server;
@@ -102,6 +113,20 @@ NetplayOnlineDialog::Settings NetplayOnlineDialog::loadSettings()
     s.InputDelay = cfg.GetInt("Netplay.InputDelay");
     s.MaxPrediction = cfg.GetInt("Netplay.MaxPrediction");
     s.KeepSave = cfg.GetBool("Netplay.KeepSave");
+
+    if (launcherProfile.Set)
+    {
+        // the launcher's server and account; nothing of it goes into the configuration
+        s.Server = launcherProfile.Server;
+        if (!launcherProfile.Stun.isEmpty())
+            s.Stun = launcherProfile.Stun;
+        if (!launcherProfile.Name.isEmpty())
+            s.Name = launcherProfile.Name;
+        if (!launcherProfile.Region.isEmpty())
+            s.Region = launcherProfile.Region;
+        s.DeviceID = launcherProfile.DeviceID;
+        return s;
+    }
 
     // one id per install: the server's account for this computer
     s.DeviceID = cfg.GetQString("Netplay.DeviceID");
@@ -562,6 +587,13 @@ void NetplayOnlineDialog::onMatchJoined(QString matchID)
     if (lookingBox->isChecked())
         sendStatus();
     updateButtons();
+
+    QString game, title, why;
+    if (quickAfterJoin && !quickMatching && loadedGame(game, title, why) && game == channelGame)
+    {
+        quickAfterJoin = false;
+        onQuickMatchClicked();
+    }
 }
 
 void NetplayOnlineDialog::onMatchJoinFailed(QString matchID, QString error)
@@ -985,6 +1017,52 @@ void NetplayOnlineDialog::onDirectClicked()
     Config::Save();
 
     startDirect(host, port->value(), address->text().trimmed(), code->text().trimmed(), -2, false);
+}
+
+bool NetplayOnlineDialog::useServerProfile(const QString& path, const QString& id, QString& error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        error = "cannot read " + path + ": " + file.errorString();
+        return false;
+    }
+    QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+    QString want = id.isEmpty() ? root.value("default").toString() : id;
+    for (const QJsonValue& v : root.value("servers").toArray())
+    {
+        QJsonObject p = v.toObject();
+        if (!want.isEmpty() && p.value("id").toString() != want)
+            continue;
+        LauncherProfile lp;
+        lp.Server.Host = p.value("host").toString().trimmed();
+        lp.Server.Port = p.value("port").toInt(7350);
+        lp.Server.Key = p.value("server_key").toString("defaultkey");
+        lp.Server.SSL = p.value("ssl").toBool();
+        lp.DeviceID = p.value("device_id").toString();
+        lp.Name = p.value("username").toString().left(24);
+        lp.Region = p.value("region").toString().left(8);
+        for (const QJsonValue& s : p.value("stun_servers").toArray())
+            lp.Stun << s.toString();
+        if (lp.Server.Host.isEmpty() || lp.DeviceID.length() < 10 || lp.DeviceID.length() > 128)
+        {
+            error = "the server profile " + p.value("id").toString() + " lacks a host or a device id";
+            return false;
+        }
+        lp.Set = true;
+        launcherProfile = lp;
+        return true;
+    }
+    error = "no server profile " + want + " in " + path;
+    return false;
+}
+
+void NetplayOnlineDialog::connectAtStart(bool quick, bool quitAfter)
+{
+    quickAfterJoin = quick;
+    quitAfterSession = quitAfter;
+    if (!client->isConnected() && !client->isConnecting())
+        onConnectClicked();
 }
 
 bool NetplayOnlineDialog::startDirect(bool host, int port, const QString& address, const QString& code,

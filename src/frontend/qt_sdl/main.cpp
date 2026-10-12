@@ -439,6 +439,19 @@ int main(int argc, char** argv)
                                  options->netplayExit);
             }
         }
+        else if (options->netplayConfig.has_value() || options->netplayOnline)
+        {
+            // a launcher's server and account (Nakama Matchmaker, as for IKEMEN GO)
+            QString error;
+            if (options->netplayConfig.has_value() &&
+                !NetplayOnlineDialog::useServerProfile(*options->netplayConfig, options->netplayServer.value_or(QString()), error))
+                printf("netplay: %s\n", error.toUtf8().constData());
+            else if (options->netplayOnline)
+            {
+                NetplayOnlineDialog* dlg = NetplayOnlineDialog::openDlg(win, win->getEmuInstance());
+                dlg->connectAtStart(options->netplayQuick, options->netplayExit);
+            }
+        }
     }
 
     int ret = melon.exec();

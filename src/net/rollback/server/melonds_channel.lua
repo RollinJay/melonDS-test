@@ -1,3 +1,8 @@
+-- SPDX-License-Identifier: MIT
+-- Copyright (c) 2026 The Nakama Matchmaker contributors
+-- This file is a Nakama server module and contains no melonDS code, so it is under the
+-- MIT license, not melonDS's GPL.
+
 local nk = require("nakama")
 
 -- melonDS game channels for Nakama.
