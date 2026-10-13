@@ -37,6 +37,8 @@ public:
     void VBlank() override {}
     void VBlankEnd() override {};
 
+    void DoRollbackState(Savestate* file);
+
 private:
     SoftRenderer& Parent;
 

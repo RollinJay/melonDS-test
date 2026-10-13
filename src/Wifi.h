@@ -173,6 +173,14 @@ public:
     const u8* GetMAC() const;
     const u8* GetBSSID() const;
 
+    // Rollback netplay runs the consoles of a session side by side in one thread, and
+    // passes their frames through a bus that does not depend on timing. In this mode
+    // the emulated access point is left out, and the host collects MP replies when the
+    // first one is due rather than when its CMD frame ends, so that its clients have run
+    // far enough to have sent them.
+    void SetDeterministicMP(bool enable) noexcept { DeterministicMP = enable; }
+    [[nodiscard]] bool IsDeterministicMP() const noexcept { return DeterministicMP; }
+
 private:
     melonDS::NDS& NDS;
     u8 RAM[0x2000];
@@ -249,6 +257,11 @@ private:
     u64 NextSync;           // for clients: timestamp for next sync point
     u64 RXTimestamp;
 
+    // deterministic MP (rollback netplay)
+    bool DeterministicMP = false;
+    bool MPRepliesPending = false;
+    u64 MPRepliesTimestamp = 0;
+
     class WifiAP* WifiAP;
 
     void ScheduleTimer(bool first);
@@ -277,6 +290,7 @@ private:
     void SendMPDefaultReply();
     void SendMPReply(u16 clienttime, u16 clientmask);
     void SendMPAck(u16 cmdcount, u16 clientfail);
+    void CollectMPReplies();
     bool ProcessTX(TXSlot* slot, int num);
 
     void IncrementRXAddr(u16& addr, u16 inc = 2);

@@ -206,6 +206,8 @@ void GPU::DoSavestate(Savestate* file) noexcept
 {
     file->Section("GPUG");
 
+    if (!file->Saving)
+        Rend->FinishAsyncWork();
     Rend->PreSavestate();
 
     if (file->Saving)
@@ -306,6 +308,12 @@ void GPU::DoSavestate(Savestate* file) noexcept
         ResetVRAMCache();
         OAMDirty = 0x3;
         PaletteDirty = 0x5F;
+    }
+
+    if (file->RollbackState)
+    {
+        file->Section("GPUR");
+        Rend->DoRollbackState(file);
     }
 
     Rend->PostSavestate();

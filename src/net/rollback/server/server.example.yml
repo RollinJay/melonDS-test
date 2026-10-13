@@ -1,0 +1,30 @@
+# Nakama configuration for a melonDS channel server (see README.md).
+# Replace every "change-me-..." with a secret of its own (they must all differ)
+# before putting the server on the internet.
+
+name: melonds
+data_dir: ./data
+
+logger:
+  level: INFO
+
+runtime:
+  # the folder that holds melonds_channel.lua
+  path: ./modules
+  # not used by melonDS, but anyone who knows it can call RPCs over HTTP
+  http_key: "change-me-http"
+
+socket:
+  # what players enter as the "Server key" in melonDS
+  server_key: "change-me-server"
+  port: 7350
+
+session:
+  encryption_key: "change-me-session"
+  refresh_encryption_key: "change-me-refresh"
+
+console:
+  # Nakama's web console (port 7351): keep it closed to the internet
+  username: "admin"
+  password: "change-me-console"
+  signing_key: "change-me-signing"

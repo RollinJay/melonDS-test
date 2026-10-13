@@ -66,6 +66,7 @@
 #include "Savestate.h"
 #include "MPInterface.h"
 #include "LANDialog.h"
+#include "NetplayOnlineDialog.h"
 
 //#include "main_shaders.h"
 
@@ -423,6 +424,11 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
 
                 actLANStartClient = submenu->addAction("Join LAN game");
                 connect(actLANStartClient, &QAction::triggered, this, &MainWindow::onLANStartClient);
+
+                submenu->addSeparator();
+
+                actOnlinePlay = submenu->addAction("Play online (rollback)...");
+                connect(actOnlinePlay, &QAction::triggered, this, &MainWindow::onOnlinePlay);
 
                 /*submenu->addSeparator();
 
@@ -1753,6 +1759,61 @@ void MainWindow::onLANStartClient()
     LANStartClientDialog::openDlg(this);
 }
 
+void MainWindow::onOnlinePlay()
+{
+    if (emuInstance->getInstanceID() != 0)
+    {
+        QMessageBox::information(this, "melonDS", "Online play runs in the first melonDS window.");
+        return;
+    }
+    NetplayOnlineDialog::openDlg(this, emuInstance);
+}
+
+void MainWindow::onNetplayStarted()
+{
+    if (!hasMenu) return;
+
+    // an online session's game takes no orders but its inputs: whatever would
+    // change one computer's game and not the other's is off until it ends
+    for (QAction* act : netplayLockedActions())
+        act->setEnabled(false);
+}
+
+void MainWindow::onNetplayEnded(QString reason)
+{
+    if (!hasMenu) return;
+
+    for (QAction* act : netplayLockedActions())
+        act->setEnabled(true);
+    if (emuThread->emuIsActive())
+        onEmuStart();
+    else
+        onEmuStop();
+    updateCartInserted(false);
+    updateCartInserted(true);
+    updateMPInterface(MPInterface::GetType());
+}
+
+QList<QAction*> MainWindow::netplayLockedActions()
+{
+    QList<QAction*> list = {
+        actOpenROM, actBootFirmware, actInsertCart, actEjectCart, actInsertGBACart, actEjectGBACart,
+        actImportSavefile, actUndoStateLoad, actPause, actReset, actStop, actFrameStep,
+        actPowerManagement, actDateTime, actEnableCheats, actSetupCheats, actRAMInfo, actTitleManager,
+        actMPNewInstance, actLANStartHost, actLANStartClient,
+        actEmuSettings, actAudioSettings, actMPSettings, actWifiSettings, actFirmwareSettings,
+    };
+    for (int i = 0; i < 9; i++)
+    {
+        list.append(actSaveState[i]);
+        list.append(actLoadState[i]);
+    }
+    for (QAction* act : actInsertGBAAddon)
+        list.append(act);
+    list.append(recentMenu->menuAction());
+    return list;
+}
+
 void MainWindow::onNPStartHost()
 {
     //Netplay::StartHost();
@@ -1931,6 +1992,8 @@ void MainWindow::onUpdateAudioVolume(int vol, int dsisync)
 void MainWindow::onUpdateAudioSettings()
 {
     if (!emuThread->emuIsActive()) return;
+    // an online session's consoles keep the settings every computer started them with
+    if (emuThread->netplayActive()) return;
     assert(emuInstance->nds != nullptr);
 
     int interp = globalCfg.GetInt("Audio.Interpolation");

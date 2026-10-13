@@ -77,6 +77,25 @@ void ARMv5::CP15DoSavestate(Savestate* file)
 {
     file->Section("CP15");
 
+    // A rollback load (Savestate::RollbackState) rebuilds the protection unit's
+    // maps and the memory timings derived from them only if the settings they
+    // derive from differ from the current ones: rebuilding them takes most of
+    // a load, and games rarely change them. This is exact only when the maps
+    // depend on nothing but these settings (PUMapsFollowRegisters).
+    auto pusettings = [this](u32* out)
+    {
+        out[0] = CP15Control;
+        out[1] = PU_CodeCacheable;
+        out[2] = PU_DataCacheable;
+        out[3] = PU_DataCacheWrite;
+        out[4] = PU_CodeRW;
+        out[5] = PU_DataRW;
+        memcpy(&out[6], PU_Region, 8*sizeof(u32));
+    };
+    const bool rollbackload = !file->Saving && file->RollbackState && PUMapsFollowRegisters;
+    u32 oldpu[14];
+    if (rollbackload) pusettings(oldpu);
+
     file->Var32(&CP15Control);
 
     file->Var32(&DTCMSetting);
@@ -98,7 +117,27 @@ void ARMv5::CP15DoSavestate(Savestate* file)
     {
         UpdateDTCMSetting();
         UpdateITCMSetting();
-        UpdatePURegions(true);
+
+        u32 newpu[14];
+        if (rollbackload) pusettings(newpu);
+        if (!rollbackload || memcmp(oldpu, newpu, sizeof(oldpu)) != 0)
+            UpdatePURegions(true);
+    }
+}
+
+void ARMv5::PURegionsChanged(u32 regionmask)
+{
+    if (!regionmask) return;
+
+    if (PUMapsFollowRegisters)
+    {
+        UpdatePURegions(false);
+        return;
+    }
+
+    for (u32 i = 0; i < 8; i++)
+    {
+        if (regionmask & (1<<i)) UpdatePURegion(i);
     }
 }
 
@@ -469,10 +508,7 @@ void ARMv5::CP15Write(u32 id, u32 val)
         {
             u32 diff = PU_DataCacheable ^ val;
             PU_DataCacheable = val;
-            for (u32 i = 0; i < 8; i++)
-            {
-                if (diff & (1<<i)) UpdatePURegion(i);
-            }
+            PURegionsChanged(diff & 0xFF);
         }
         return;
 
@@ -480,10 +516,7 @@ void ARMv5::CP15Write(u32 id, u32 val)
         {
             u32 diff = PU_CodeCacheable ^ val;
             PU_CodeCacheable = val;
-            for (u32 i = 0; i < 8; i++)
-            {
-                if (diff & (1<<i)) UpdatePURegion(i);
-            }
+            PURegionsChanged(diff & 0xFF);
         }
         return;
 
@@ -492,10 +525,7 @@ void ARMv5::CP15Write(u32 id, u32 val)
         {
             u32 diff = PU_DataCacheWrite ^ val;
             PU_DataCacheWrite = val;
-            for (u32 i = 0; i < 8; i++)
-            {
-                if (diff & (1<<i)) UpdatePURegion(i);
-            }
+            PURegionsChanged(diff & 0xFF);
         }
         return;
 
@@ -513,10 +543,12 @@ void ARMv5::CP15Write(u32 id, u32 val)
             PU_DataRW |= ((val & 0x3000) << 12);
             PU_DataRW |= ((val & 0xC000) << 14);
             u32 diff = old ^ PU_DataRW;
+            u32 regions = 0;
             for (u32 i = 0; i < 8; i++)
             {
-                if (diff & (0xF<<(i*4))) UpdatePURegion(i);
+                if (diff & (0xF<<(i*4))) regions |= (1<<i);
             }
+            PURegionsChanged(regions);
         }
         return;
 
@@ -533,10 +565,12 @@ void ARMv5::CP15Write(u32 id, u32 val)
             PU_CodeRW |= ((val & 0x3000) << 12);
             PU_CodeRW |= ((val & 0xC000) << 14);
             u32 diff = old ^ PU_CodeRW;
+            u32 regions = 0;
             for (u32 i = 0; i < 8; i++)
             {
-                if (diff & (0xF<<(i*4))) UpdatePURegion(i);
+                if (diff & (0xF<<(i*4))) regions |= (1<<i);
             }
+            PURegionsChanged(regions);
         }
         return;
 
@@ -544,10 +578,12 @@ void ARMv5::CP15Write(u32 id, u32 val)
         {
             u32 diff = PU_DataRW ^ val;
             PU_DataRW = val;
+            u32 regions = 0;
             for (u32 i = 0; i < 8; i++)
             {
-                if (diff & (0xF<<(i*4))) UpdatePURegion(i);
+                if (diff & (0xF<<(i*4))) regions |= (1<<i);
             }
+            PURegionsChanged(regions);
         }
         return;
 
@@ -555,10 +591,12 @@ void ARMv5::CP15Write(u32 id, u32 val)
         {
             u32 diff = PU_CodeRW ^ val;
             PU_CodeRW = val;
+            u32 regions = 0;
             for (u32 i = 0; i < 8; i++)
             {
-                if (diff & (0xF<<(i*4))) UpdatePURegion(i);
+                if (diff & (0xF<<(i*4))) regions |= (1<<i);
             }
+            PURegionsChanged(regions);
         }
         return;
 

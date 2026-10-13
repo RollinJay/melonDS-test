@@ -237,6 +237,9 @@ void Wifi::Reset()
     NextSync = 0;
     RXTimestamp = 0;
 
+    MPRepliesPending = false;
+    MPRepliesTimestamp = 0;
+
     WifiAP->Reset();
 }
 
@@ -313,6 +316,14 @@ void Wifi::DoSavestate(Savestate* file)
     file->Bool32(&IsMPClient);
     file->Var64(&NextSync);
     file->Var64(&RXTimestamp);
+
+    if (DeterministicMP)
+    {
+        // rollback netplay only: these states never leave memory
+        file->Section("WIFD");
+        file->VarBool(&MPRepliesPending);
+        file->Var64(&MPRepliesTimestamp);
+    }
 }
 
 
@@ -657,7 +668,7 @@ void Wifi::TXSendFrame(const TXSlot* slot, int num)
     case 2:
     case 3:
         Platform::MP_SendPacket(TXBuffer, 12+len, USTimestamp, NDS.UserData);
-        if (!IsMP) WifiAP->SendPacket(TXBuffer, 12+len);
+        if (!IsMP && !DeterministicMP) WifiAP->SendPacket(TXBuffer, 12+len);
         break;
 
     case 1:
@@ -801,7 +812,7 @@ void Wifi::FireTX()
 
 void Wifi::SendMPDefaultReply()
 {
-    u8 reply[12 + 28];
+    u8 reply[12 + 28] = {};
 
     *(u16*)&reply[0xA] = 28; // length
 
@@ -895,7 +906,7 @@ void Wifi::SendMPReply(u16 clienttime, u16 clientmask)
 
 void Wifi::SendMPAck(u16 cmdcount, u16 clientfail)
 {
-    u8 ack[12 + 32];
+    u8 ack[12 + 32] = {};
 
     *(u16*)&ack[0xA] = 32; // length
 
@@ -942,6 +953,15 @@ void Wifi::SendMPAck(u16 cmdcount, u16 clientfail)
     WIFI_LOG("wifi: sent %d/44 bytes of MP ack, %d %d\n", txlen, ComStatus, RXTime);
 }
 
+void Wifi::CollectMPReplies()
+{
+    // deterministic MP only: the reply collection deferred from the end of the CMD frame
+    MPRepliesPending = false;
+
+    u16 res = Platform::MP_RecvReplies(MPClientReplies, MPRepliesTimestamp, MPClientMask, NDS.UserData);
+    MPClientFail &= ~res;
+}
+
 bool Wifi::ProcessTX(TXSlot* slot, int num)
 {
     slot->CurPhaseTime -= kTimerInterval;
@@ -957,6 +977,9 @@ bool Wifi::ProcessTX(TXSlot* slot, int num)
             MPReplyTimer -= kTimerInterval;
             if (MPReplyTimer <= 0 && MPClientMask != 0)
             {
+                if (MPRepliesPending)
+                    CollectMPReplies();
+
                 int nclient = 1;
                 while (!(MPClientMask & (1 << nclient))) nclient++;
 
@@ -1059,10 +1082,21 @@ bool Wifi::ProcessTX(TXSlot* slot, int num)
 
                 MPReplyTimer = 16 + PreambleLen(slot->Rate);
 
-                u16 res = 0;
-                if (MPClientMask)
-                    res = Platform::MP_RecvReplies(MPClientReplies, USTimestamp, MPClientMask, NDS.UserData);
-                MPClientFail &= ~res;
+                if (DeterministicMP)
+                {
+                    // the clients are run in turn with this console, in the same thread, and
+                    // may not have sent their replies yet: collect them when the first one
+                    // is due instead (phase 2 below), by which time they have
+                    MPRepliesPending = (MPClientMask != 0);
+                    MPRepliesTimestamp = USTimestamp;
+                }
+                else
+                {
+                    u16 res = 0;
+                    if (MPClientMask)
+                        res = Platform::MP_RecvReplies(MPClientReplies, USTimestamp, MPClientMask, NDS.UserData);
+                    MPClientFail &= ~res;
+                }
 
                 // TODO: 112 likely includes the ack preamble, which needs adjusted
                 // for long-preamble settings
@@ -1124,6 +1158,9 @@ bool Wifi::ProcessTX(TXSlot* slot, int num)
 
     case 2: // MP host transfer done
         {
+            if (MPRepliesPending)
+                CollectMPReplies();
+
             SetIRQ(7);
             SetStatus(8);
 
@@ -1585,7 +1622,7 @@ bool Wifi::CheckRX(int type) // 0=regular 1=MP replies 2=MP host frames
         if (type == 0)
         {
             rxlen = Platform::MP_RecvPacket(RXBuffer, &timestamp, NDS.UserData);
-            if ((rxlen <= 0) && (!IsMP))
+            if ((rxlen <= 0) && (!IsMP) && (!DeterministicMP))
                 rxlen = WifiAP->RecvPacket(RXBuffer);
         }
         else
@@ -1775,7 +1812,7 @@ void Wifi::USTimer(u32 param)
         }
     }
 
-    if (!(USTimestamp & 0x3FF & kTimeCheckMask))
+    if (!(USTimestamp & 0x3FF & kTimeCheckMask) && !DeterministicMP)
         WifiAP->MSTimer();
 
     if (USUntilPowerOn < 0)

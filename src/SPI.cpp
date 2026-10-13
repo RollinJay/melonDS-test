@@ -108,6 +108,10 @@ void FirmwareMem::Reset()
     CurCmd = 0;
     Data = 0;
     StatusReg = 0x00;
+    // saved in savestates: a value left from whatever the memory held before
+    // would make two identical consoles' states differ
+    Addr = 0;
+    DataPos = 0;
 }
 
 void FirmwareMem::DoSavestate(Savestate* file)
@@ -124,6 +128,21 @@ void FirmwareMem::DoSavestate(Savestate* file)
 
     file->Var8(&StatusReg);
     file->Var32(&Addr);
+
+    if (file->RollbackState)
+    {
+        // Games can write to the firmware (user settings, Wi-Fi connection data);
+        // rollback netplay must undo such writes too.
+        file->Section("SPFR");
+        u32 len = FirmwareData.Length();
+        file->Var32(&len);
+        if (len != FirmwareData.Length())
+        {
+            file->Error = true;
+            return;
+        }
+        file->VarArray(FirmwareData.Buffer(), len);
+    }
 }
 
 void FirmwareMem::SetupDirectBoot()

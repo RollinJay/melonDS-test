@@ -37,6 +37,10 @@ public:
 
     void PreSavestate() override;
     void PostSavestate() override;
+    void DoRollbackState(Savestate* file) override;
+    void SetHeadless(bool headless, bool render3D) override;
+    void SetAsyncRender(bool enable) override;
+    void FinishAsyncWork() override;
 
     void SetRenderSettings(RendererSettings& settings) override;
 
@@ -59,6 +63,9 @@ private:
 
     u32* Output3D;
     alignas(8) u32 Output2D[2][256];
+
+    bool Headless = false;
+    u32 CaptureHeight() const;
 
     void DrawScanlineA(u32 line, u32* dst);
     void DrawScanlineB(u32 line, u32* dst);

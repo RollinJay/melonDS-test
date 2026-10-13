@@ -72,6 +72,11 @@ DefaultList<int> DefaultInts =
     {"Instance*.Gdb.ARM9.Port", 3333},
 #endif
     {"LAN.HostNumPlayers", 16},
+    {"Netplay.Server.Port", 7350},
+    {"Netplay.Port", 7064},
+    {"Netplay.InputDelay", -1},
+    {"Netplay.MaxPrediction", 8},
+    {"Netplay.Threads", 0},
 };
 
 RangeList IntRanges =
@@ -91,6 +96,11 @@ RangeList IntRanges =
     {"Instance*.Window*.ScreenAspectBot", {0, AspectRatiosNum-1}},
     {"MP.AudioMode", {0, 2}},
     {"LAN.HostNumPlayers", {2, 16}},
+    {"Netplay.Server.Port", {1, 65535}},
+    {"Netplay.Port", {1024, 65535}},
+    {"Netplay.InputDelay", {-1, 15}},
+    {"Netplay.MaxPrediction", {1, 8}},
+    {"Netplay.Threads", {0, 16}},
 };
 
 DefaultList<bool> DefaultBools =
@@ -118,7 +128,10 @@ DefaultList<std::string> DefaultStrings =
 {
     {"DLDI.ImagePath",                  "dldi.bin"},
     {"DSi.SD.ImagePath",                "dsisd.bin"},
-    {"Instance*.Firmware.Username",     "melonDS"}
+    {"Instance*.Firmware.Username",     "melonDS"},
+    {"Netplay.Server.Key",              "defaultkey"},
+    {"Netplay.STUN",                    "stun.l.google.com:19302,stun.cloudflare.com:3478"},
+    {"Netplay.DirectCode",              "melonDS"},
 };
 
 DefaultList<double> DefaultDoubles =

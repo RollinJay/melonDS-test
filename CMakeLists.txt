@@ -104,9 +104,17 @@ if (ENABLE_GDBSTUB)
 endif()
 
 option(BUILD_QT_SDL "Build Qt/SDL frontend" ON)
+option(BUILD_NETPLAY_TOOL "Build melonDS-netplay-tool, the headless rollback netplay checker" OFF)
 
 add_subdirectory(src)
 
 if (BUILD_QT_SDL)
     add_subdirectory(src/frontend/qt_sdl)
+endif()
+
+if (BUILD_NETPLAY_TOOL)
+    if (NOT TARGET rollback-netplay)
+        add_subdirectory(src/net/rollback ${CMAKE_BINARY_DIR}/rollback)
+    endif()
+    add_subdirectory(src/net/rollback/tool ${CMAKE_BINARY_DIR}/netplay-tool)
 endif()

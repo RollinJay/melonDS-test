@@ -414,6 +414,15 @@ public: // TODO: Encapsulate the rest of these members
 
     u32 RunFrame();
 
+    // Running a frame in slices, for rollback netplay, which runs several consoles
+    // side by side in one thread: BeginFrame(), then RunFrameSlice() until it returns
+    // true (the frame is over), then EndFrame(). RunFrame() does the same with no limit.
+    void BeginFrame();
+    bool RunFrameSlice(u64 limit);
+    u32 EndFrame();
+    [[nodiscard]] u64 GetSysTimestamp() const noexcept { return SysTimestamp; }
+    [[nodiscard]] bool IsWifiPowered() const noexcept { return PowerControl7 & 0x0002; }
+
     bool IsRunning() const noexcept { return Running; }
 
     void TouchScreen(u16 x, u16 y);
@@ -556,6 +565,11 @@ protected:
     void EnterSleepMode();
     template <CPUExecuteMode cpuMode>
     u32 RunFrame();
+    template <CPUExecuteMode cpuMode>
+    bool RunFrameSlice(u64 limit);
+    enum { FramePhase_Top = 0, FramePhase_Sleep, FramePhase_Run };
+    int FramePhase = FramePhase_Top;
+    u64 FrameTarget = 0;
 
 public:
     NDS(NDSArgs&& args, void* userdata = nullptr) noexcept : NDS(std::move(args), 0, userdata) {}

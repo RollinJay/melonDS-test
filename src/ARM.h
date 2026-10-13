@@ -312,6 +312,16 @@ public:
 
     void UpdatePURegion(u32 n);
     void UpdatePURegions(bool update_all);
+    // the cache or access settings of the regions in regionmask (bit n: region n) changed
+    void PURegionsChanged(u32 regionmask);
+
+    // Rollback netplay sets this: the protection unit's maps then depend only
+    // on its registers. A change to a region's cache or access settings
+    // re-applies every region in priority order, where it would otherwise
+    // overwrite that region's pages even where a higher region overlaps them.
+    // A rollback load relies on it to keep the maps when the registers are
+    // unchanged (see CP15DoSavestate).
+    bool PUMapsFollowRegisters = false;
 
     u32 RandomLineIndex();
 

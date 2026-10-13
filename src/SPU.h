@@ -247,6 +247,10 @@ public:
     void Mix(u32 spucycles);
     void BufferAudio();
 
+    // Rollback netplay: when disabled, the audio produced is dropped instead of being
+    // queued for the frontend (consoles nobody hears, and frames simulated again).
+    void SetOutputEnabled(bool enable) { OutputEnabled = enable; }
+
     void TrimOutput();
     void DrainOutput();
     void InitOutput();
@@ -274,6 +278,7 @@ private:
     int BlipTimer = 0;
 
     s16* OutputBuffer;
+    bool OutputEnabled = true;
     u32 OutputBufferWritePos = 0;
     u32 OutputBufferReadPos = 0;
     s16 OutputLastSamples[2];

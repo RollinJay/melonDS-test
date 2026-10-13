@@ -44,6 +44,16 @@ CommandLineOptions* ManageArgs(QApplication& melon)
     parser.addOption(QCommandLineOption({"b", "boot"}, "Whether to boot firmware on startup. Defaults to \"auto\" (boot if NDS rom given)", "auto/always/never", "auto"));
     parser.addOption(QCommandLineOption({"f", "fullscreen"}, "Start melonDS in fullscreen mode"));
 
+    parser.addOption(QCommandLineOption("netplay-host", "Host a direct online session of the given ROM on this UDP port", "port"));
+    parser.addOption(QCommandLineOption("netplay-join", "Join the direct online session at this address", "host:port"));
+    parser.addOption(QCommandLineOption("netplay-code", "Session code of a direct online session (both players give the same)", "code"));
+    parser.addOption(QCommandLineOption("netplay-delay", "Input delay in frames when hosting (default: from the round trip)", "frames"));
+    parser.addOption(QCommandLineOption("netplay-exit", "Quit melonDS when the online session ends"));
+    parser.addOption(QCommandLineOption("netplay-config", "Server profiles (JSON, as IKEMEN GO's servers.json) to use instead of the online settings", "file"));
+    parser.addOption(QCommandLineOption("netplay-server", "The profile of --netplay-config to use (default: its default)", "id"));
+    parser.addOption(QCommandLineOption("netplay-online", "Open the online window and connect to the server at start"));
+    parser.addOption(QCommandLineOption("netplay-quick", "With --netplay-online: ask for a quick match in the game's channel"));
+
 #ifdef ARCHIVE_SUPPORT_ENABLED
     parser.addOption(QCommandLineOption({"a", "archive-file"}, "Specify file to load inside an archive given (NDS)", "rom"));
     parser.addOption(QCommandLineOption({"A", "archive-file-gba"}, "Specify file to load inside an archive given (GBA)", "rom"));
@@ -54,6 +64,22 @@ CommandLineOptions* ManageArgs(QApplication& melon)
     CommandLineOptions* options = new CommandLineOptions;
 
     options->fullscreen = parser.isSet("fullscreen");
+
+    if (parser.isSet("netplay-host"))
+        options->netplayHost = parser.value("netplay-host").toInt();
+    if (parser.isSet("netplay-join"))
+        options->netplayJoin = parser.value("netplay-join");
+    if (parser.isSet("netplay-code"))
+        options->netplayCode = parser.value("netplay-code");
+    if (parser.isSet("netplay-delay"))
+        options->netplayDelay = parser.value("netplay-delay").toInt();
+    options->netplayExit = parser.isSet("netplay-exit");
+    if (parser.isSet("netplay-config"))
+        options->netplayConfig = parser.value("netplay-config");
+    if (parser.isSet("netplay-server"))
+        options->netplayServer = parser.value("netplay-server");
+    options->netplayOnline = parser.isSet("netplay-online") || parser.isSet("netplay-quick");
+    options->netplayQuick = parser.isSet("netplay-quick");
 
     QStringList posargs = parser.positionalArguments();
     switch (posargs.size())

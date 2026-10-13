@@ -23,6 +23,8 @@
 #include "Platform.h"
 #include <thread>
 #include <atomic>
+#include <mutex>
+#include <condition_variable>
 
 namespace melonDS
 {
@@ -43,6 +45,18 @@ public:
     void RestartFrame() override;
 
     u32* GetLine(int line) override;
+
+    void DoRollbackState(Savestate* file);
+    void SetHeadless(bool headless) noexcept { Headless = headless; }
+
+    // Rollback netplay: a shown console's 3D image is rendered on a thread of its
+    // own from scanline 215 on (instead of the emulation thread rendering it
+    // there), while the console goes on running; it is waited for where it is
+    // first needed (GetLine, the next RenderFrame). Meanwhile the image counts as
+    // pending (RenderPending): a state saved then gets the textures to render it
+    // again, not the image, and a state load cancels it.
+    void SetAsyncRender(bool enable);
+    void CancelAsyncRender();
 
     void SetupRenderThread();
     void EnableRenderThread();
@@ -491,6 +505,28 @@ private:
     bool Enabled;
 
     bool FrameIdentical;
+
+    // headless rendering (rollback netplay): the 3D image is rendered the first time
+    // a line of it is read, not at scanline 215, and not at all if nothing reads it
+    bool Headless = false;
+    bool RenderPending = false;
+    bool ColorBufferValid = false;  // ColorBuffer holds the image of the last RenderFrame()
+    void RenderPendingFrame();
+
+    // asynchronous rendering (rollback netplay, see SetAsyncRender)
+    bool AsyncEnabled = false;
+    bool AsyncInFlight = false;     // a render was started and not taken yet (emulation thread)
+    std::thread AsyncThread;
+    std::mutex AsyncLock;
+    std::condition_variable AsyncCV;
+    bool AsyncStart = false;        // the rest under AsyncLock
+    bool AsyncDone = false;
+    bool AsyncQuit = false;
+    std::atomic<bool> AsyncCancel {false};
+    void AsyncLoop();
+    void StartAsyncRender();
+    void FinishAsyncRender();       // waits for a render in flight and takes its image
+    void StopAsyncThread();
 
     u32 ScrolledLine[256];
 

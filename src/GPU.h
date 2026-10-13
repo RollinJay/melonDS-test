@@ -842,6 +842,26 @@ public:
     virtual void PreSavestate() {}
     virtual void PostSavestate() {}
 
+    // Rollback netplay (Savestate::RollbackState): what a frame leaves in the renderer
+    // for the next one and ordinary savestates do not keep. Without it, the frame after
+    // a state is loaded would show, and display-capture into VRAM, the 3D image and line 0
+    // sprites of whatever frame ran last.
+    virtual void DoRollbackState(Savestate* file) {}
+
+    // Rollback netplay: the picture of a headless console is not shown (another
+    // player's console, or a frame simulated again after a rollback). Only display
+    // capture can make the picture part of the console's state, so a headless
+    // renderer draws only what a capture reads. Renderers that do not support it
+    // keep drawing everything. `render3D`: render the 3D image all the same, as a
+    // shown console does (the last frame of a rollback: the next frame shows it).
+    virtual void SetHeadless(bool headless, bool render3D) {}
+
+    // Rollback netplay: render the shown console's 3D image on a thread of its own,
+    // while the consoles go on running (see SoftRenderer3D::SetAsyncRender).
+    virtual void SetAsyncRender(bool enable) {}
+    // Stops what the renderer does on threads of its own before a savestate is loaded.
+    virtual void FinishAsyncWork() {}
+
     virtual void SetRenderSettings(RendererSettings& settings) = 0;
 
     virtual void DrawScanline(u32 line) = 0;

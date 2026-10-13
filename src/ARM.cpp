@@ -267,6 +267,20 @@ void ARM::DoSavestate(Savestate* file)
             CodeCycles = R[15] >> 15; // cheato
         }
     }
+
+    if (file->RollbackState)
+    {
+        // Rollback netplay needs the exact console back. The code fetch timing
+        // comes from the region of the last jump, which the load above guesses
+        // from the PC: they differ once code runs on into the next region.
+        file->Section((char*)(Num ? "AR7R" : "AR9R"));
+        file->Var32(&CodeRegion);
+        file->Var32((u32*)&CodeCycles);
+        file->Var32(&DataRegion);
+        file->Var32((u32*)&DataCycles);
+        if (!Num)
+            file->Var32((u32*)&((ARMv5*)this)->RegionCodeCycles);
+    }
 }
 
 void ARMv5::DoSavestate(Savestate* file)

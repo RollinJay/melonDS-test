@@ -64,6 +64,14 @@ public:
 
     void CalculateWindowMask(u8* windowMask, const u8* objWindow);
 
+    // What drawing a scanline changes in the unit's own state: the windows'
+
+    // horizontal state, which CalculateWindowMask updates. A headless renderer
+
+    // (rollback netplay) calls this for the scanlines it does not draw.
+
+    void SkipScanline();
+
     u32 Num;
     bool Enabled;
 

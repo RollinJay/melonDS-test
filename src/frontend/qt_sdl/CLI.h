@@ -34,6 +34,19 @@ struct CommandLineOptions
     std::optional<QString> gbaRomArchivePath;
     bool fullscreen;
     bool boot;
+
+    // a direct online session started at launch (with the ROM given)
+    std::optional<int> netplayHost;         // UDP port to wait on
+    std::optional<QString> netplayJoin;     // host:port
+    std::optional<QString> netplayCode;
+    std::optional<int> netplayDelay;
+    bool netplayExit = false;               // quit when the session ends
+
+    // online through a server named by a launcher (Nakama Matchmaker)
+    std::optional<QString> netplayConfig;   // server profiles file
+    std::optional<QString> netplayServer;   // profile id
+    bool netplayOnline = false;             // connect at start
+    bool netplayQuick = false;              // and ask for a quick match
 };
 
 extern CommandLineOptions* ManageArgs(QApplication& melon);

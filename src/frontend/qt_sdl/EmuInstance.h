@@ -169,6 +169,10 @@ public:
 
     QMutex renderLock;
 
+    // the DS ROM last loaded (online play reads it again from there)
+    QStringList lastROMPath;
+    bool readLastROM(std::vector<melonDS::u8>& data, std::string& name);
+
 private:
     static int lastSep(const std::string& path);
     std::string getAssetPath(bool gba, const std::string& configpath, const std::string& ext, const std::string& file);

@@ -84,6 +84,15 @@ void SoftRenderer::PostSavestate()
         rend3d->EnableRenderThread();
 }
 
+void SoftRenderer::DoRollbackState(Savestate* file)
+{
+    // the line 0 sprites are drawn during scanline 262 of the previous frame,
+    // and the 3D image at scanline 215 (rollback netplay uses the unthreaded renderer)
+    static_cast<SoftRenderer2D*>(Rend2D_A.get())->DoRollbackState(file);
+    static_cast<SoftRenderer2D*>(Rend2D_B.get())->DoRollbackState(file);
+    static_cast<SoftRenderer3D*>(Rend3D.get())->DoRollbackState(file);
+}
+
 
 void SoftRenderer::SetRenderSettings(RendererSettings& settings)
 {
@@ -92,8 +101,51 @@ void SoftRenderer::SetRenderSettings(RendererSettings& settings)
 }
 
 
+void SoftRenderer::SetHeadless(bool headless, bool render3D)
+{
+    Headless = headless;
+    static_cast<SoftRenderer3D*>(Rend3D.get())->SetHeadless(headless && !render3D);
+}
+
+void SoftRenderer::SetAsyncRender(bool enable)
+{
+    static_cast<SoftRenderer3D*>(Rend3D.get())->SetAsyncRender(enable);
+}
+
+void SoftRenderer::FinishAsyncWork()
+{
+    static_cast<SoftRenderer3D*>(Rend3D.get())->CancelAsyncRender();
+}
+
+u32 SoftRenderer::CaptureHeight() const
+{
+    u32 sz = (GPU.CaptureCnt >> 20) & 0x3;
+    return sz ? (64 * sz) : 128;
+}
+
 void SoftRenderer::DrawScanline(u32 line)
 {
+    if (Headless)
+    {
+        // nobody sees this picture: draw only the lines a display capture copies to VRAM,
+        // which is all its source A needs (engine A's output, or the 3D image), but
+        // change the 2D units' state as drawing would
+        line = GPU.VCount;
+        if (line < 192)
+        {
+            if (GPU.CaptureEnable && line < CaptureHeight())
+            {
+                Output3D = Rend3D->GetLine(line);
+                Rend2D_A->DrawScanline(line);
+                DoCapture(line);
+            }
+            else
+                GPU.GPU2D_A.SkipScanline();
+            GPU.GPU2D_B.SkipScanline();
+        }
+        return;
+    }
+
     u32 *dstA, *dstB;
     u32 dstoffset = 256 * line;
     if (GPU.ScreenSwap)
@@ -159,6 +211,15 @@ void SoftRenderer::DrawScanline(u32 line)
 
 void SoftRenderer::DrawSprites(u32 line)
 {
+    if (Headless && line != 0)
+    {
+        // the sprites of a line are drawn during the previous one; whether the frame
+        // captures is decided at line 0, so line 0's sprites are always drawn
+        if (GPU.CaptureEnable && line < CaptureHeight())
+            Rend2D_A->DrawSprites(line);
+        return;
+    }
+
     Rend2D_A->DrawSprites(line);
     Rend2D_B->DrawSprites(line);
 }

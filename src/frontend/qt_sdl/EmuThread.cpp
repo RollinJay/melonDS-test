@@ -55,6 +55,12 @@
 
 #include "EmuInstance.h"
 
+#include "OnlineSession.h"
+#include "P2PLink.h"
+#include "NetplayInput.h"
+
+#include <QDateTime>
+
 using namespace melonDS;
 
 
@@ -67,6 +73,8 @@ EmuThread::EmuThread(EmuInstance* inst, QObject* parent) : QThread(parent)
     emuActive = false;
 }
 
+EmuThread::~EmuThread() = default;
+
 void EmuThread::attachWindow(MainWindow* window)
 {
     connect(this, SIGNAL(windowTitleChange(QString)), window, SLOT(onTitleUpdate(QString)));
@@ -77,6 +85,8 @@ void EmuThread::attachWindow(MainWindow* window)
     connect(this, SIGNAL(autoScreenSizingChange(int)), window->panel, SLOT(onAutoScreenSizingChanged(int)));
     connect(this, SIGNAL(windowFullscreenToggle()), window, SLOT(onFullscreenToggled()));
     connect(this, SIGNAL(screenEmphasisToggle()), window, SLOT(onScreenEmphasisToggled()));
+    connect(this, SIGNAL(netplayGameStarted()), window, SLOT(onNetplayStarted()));
+    connect(this, SIGNAL(netplayEnded(QString)), window, SLOT(onNetplayEnded(QString)));
 
     if (window->winHasMenu())
     {
@@ -95,6 +105,8 @@ void EmuThread::detachWindow(MainWindow* window)
     disconnect(this, SIGNAL(autoScreenSizingChange(int)), window->panel, SLOT(onAutoScreenSizingChanged(int)));
     disconnect(this, SIGNAL(windowFullscreenToggle()), window, SLOT(onFullscreenToggled()));
     disconnect(this, SIGNAL(screenEmphasisToggle()), window, SLOT(onScreenEmphasisToggled()));
+    disconnect(this, SIGNAL(netplayGameStarted()), window, SLOT(onNetplayStarted()));
+    disconnect(this, SIGNAL(netplayEnded(QString)), window, SLOT(onNetplayEnded(QString)));
 
     if (window->winHasMenu())
     {
@@ -156,6 +168,20 @@ void EmuThread::run()
             MPInterface::Get().Process();
 
         emuInstance->inputProcess();
+
+        if (netSession)
+        {
+            // an online session has the emulation to itself: no pause, reset,
+            // fast forward or savestates, which the other player's game would not follow
+            if (emuInstance->hotkeyPressed(HK_FullscreenToggle)) emit windowFullscreenToggle();
+            if (emuInstance->hotkeyPressed(HK_SwapScreens)) emit swapScreensToggle();
+            if (emuInstance->hotkeyPressed(HK_SwapScreenEmphasis)) emit screenEmphasisToggle();
+            if (emuInstance->hotkeyPressed(HK_AudioMuteToggle)) emuInstance->toggleAudioMute();
+
+            netplayStep();
+            handleMessages();
+            continue;
+        }
 
         if (emuInstance->hotkeyPressed(HK_FrameLimitToggle)) emit windowLimitFPSChange();
 
@@ -444,6 +470,14 @@ void EmuThread::run()
 
         handleMessages();
     }
+
+    // quitting during an online session: end it, and give the instance its own
+    // console back before the instance deletes it
+    if (netSession)
+    {
+        netSession->Leave("melonDS was closed.");
+        netplayFinish();
+    }
 }
 
 void EmuThread::sendMessage(Message msg)
@@ -474,6 +508,27 @@ void EmuThread::handleMessages()
     while (!msgQueue.empty())
     {
         Message msg = msgQueue.dequeue();
+
+        // during an online session, nothing may change the emulation but the session
+        if (netSession)
+        {
+            switch (msg.type)
+            {
+            case msg_EmuRun: case msg_EmuPause: case msg_EmuUnpause: case msg_EmuStop:
+            case msg_EmuFrameStep: case msg_EmuReset:
+            case msg_BootROM: case msg_BootFirmware: case msg_InsertCart: case msg_EjectCart:
+            case msg_InsertGBACart: case msg_InsertGBAAddon: case msg_EjectGBACart:
+            case msg_LoadState: case msg_SaveState: case msg_UndoStateLoad:
+            case msg_ImportSavefile: case msg_EnableCheats:
+                msgResult = 0;
+                msgError = "Not during an online session.";
+                msgSemaphore.release();
+                continue;
+            default:
+                break;
+            }
+        }
+
         switch (msg.type)
         {
         case msg_Exit:
@@ -651,6 +706,20 @@ void EmuThread::handleMessages()
 
         case msg_EnableCheats:
             emuInstance->enableCheats(msg.param.value<bool>());
+            break;
+
+        case msg_NetplayStart:
+            netplayBegin(msg.param.value<std::shared_ptr<NetplayStartRequest>>());
+            break;
+
+        case msg_NetplayLeave:
+            if (netSession)
+                netSession->Leave();
+            break;
+
+        case msg_NetplayChat:
+            if (netSession)
+                netSession->SendChat(msg.param.value<QString>().toStdString());
             break;
         }
 
@@ -902,4 +971,253 @@ void EmuThread::compileShaders()
     while (renderer.NeedsShaderCompile() &&
              (SDL_GetPerformanceCounter() - startTime) * perfCountsSec < 1.0 / 6.0);
     emuInstance->osdAddMessage(0, "Compiling shader %d/%d", currentShader+1, shadersCount);
+}
+
+// ---- online sessions -------------------------------------------------------------
+//
+// An online session (melonDS::RollbackNet::OnlineSession) runs its own machine:
+// one console per player, the local player's shown and heard, the others
+// headless. While it runs, emuInstance->nds points to the local player's
+// console so that the screens and the audio output show that console; the
+// game that was loaded before stays paused underneath and comes back after.
+
+void EmuThread::netplayStart(std::shared_ptr<NetplayStartRequest> req)
+{
+    sendMessage({.type = msg_NetplayStart, .param = QVariant::fromValue(req)});
+    waitMessage();
+}
+
+void EmuThread::netplayLeave()
+{
+    sendMessage(msg_NetplayLeave);
+    waitMessage();
+}
+
+void EmuThread::netplaySendChat(const QString& text)
+{
+    sendMessage({.type = msg_NetplayChat, .param = text});
+    waitMessage();
+}
+
+void EmuThread::netplayBegin(std::shared_ptr<NetplayStartRequest> req)
+{
+    using namespace melonDS::RollbackNet;
+
+    if (!req || !req->Link)
+        return;
+    if (netSession)
+    {
+        req->Link->Close();
+        emit netplayEnded("An online session is already running.");
+        return;
+    }
+
+    LocalSetup local;
+    if (!emuInstance->readLastROM(local.ROM, local.ROMName))
+    {
+        req->Link->Close();
+        emit netplayEnded("Open the game you want to play online first (File > Open ROM...).");
+        return;
+    }
+
+    // this player's save: what the loaded game has now
+    if (emuInstance->nds && emuInstance->cartInserted())
+    {
+        const u8* save = emuInstance->nds->GetNDSSave();
+        u32 len = emuInstance->nds->GetNDSSaveLength();
+        if (save && len)
+            local.Save.assign(save, save + len);
+    }
+
+    // the console settings the other players' copies of this console get
+    Config::Table fw = emuInstance->localCfg.GetTable("Firmware");
+    // the online name, which the consoles show as the DS nickname (its first 10
+    // characters) and the session as the player's name
+    local.Profile.Name = req->PlayerName.empty() ? fw.GetString("Username") : req->PlayerName;
+    if (local.Profile.Name.empty())
+        local.Profile.Name = "melonDS";
+    local.Profile.Message = fw.GetString("Message");
+    int lang = fw.GetInt("Language");
+    local.Profile.Language = (lang >= 0 && lang <= 5) ? lang : 1;
+    local.Profile.BirthdayMonth = std::clamp(fw.GetInt("BirthdayMonth"), 1, 12);
+    local.Profile.BirthdayDay = std::clamp(fw.GetInt("BirthdayDay"), 1, 31);
+    int color = fw.GetInt("FavouriteColour");
+    local.Profile.FavoriteColor = (color >= 0 && color <= 15) ? color : 0;
+
+    local.InputDelay = req->InputDelay;
+    local.MaxPrediction = req->MaxPrediction;
+    local.AudioSampleRate = emuInstance->audioFreq;
+    // threads running the session's consoles (0: one per console, up to the cores)
+    local.Threads = emuInstance->getGlobalConfig().GetInt("Netplay.Threads");
+    local.Version = MELONDS_VERSION;
+    // the host's clock is the one used
+    QDateTime now = QDateTime::currentDateTime();
+    local.Year = now.date().year();
+    local.Month = now.date().month();
+    local.Day = now.date().day();
+    local.Hour = now.time().hour();
+    local.Minute = now.time().minute();
+    local.Second = now.time().second();
+
+    // the game loaded before stays paused under the session
+    if (emuStatus == emuStatus_Running || emuStatus == emuStatus_FrameStep)
+    {
+        emuPauseStack++;
+        prevEmuStatus = emuStatus_Running;
+        emuStatus = emuStatus_Paused;
+        emit windowEmuPause(true);
+    }
+    emuInstance->audioDisable();
+
+    netRequest = req;
+    netSession = std::make_unique<OnlineSession>(req->Link, req->Host, std::move(local));
+    netShowing = false;
+    netLastStatus.clear();
+    netActive = true;
+}
+
+void EmuThread::netplayShow()
+{
+    emuInstance->audioDisable();
+    emuInstance->renderLock.lock();
+    netSavedNDS = emuInstance->nds;
+    emuInstance->nds = netSession->Machine()->Console(netSession->LocalPlayer());
+    emuInstance->renderLock.unlock();
+    netSavedActive = emuActive;
+    emuActive = true;
+    netShowing = true;
+    emuInstance->audioEnable();
+
+    double now = SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency();
+    netNextFrame = now;
+    netMeasureStart = now;
+    netFrames = 0;
+    emit netplayGameStarted();
+}
+
+void EmuThread::netplayStep()
+{
+    using namespace melonDS::RollbackNet;
+    OnlineSession& s = *netSession;
+
+    s.Poll();
+
+    QString status = QString::fromStdString(s.StatusText());
+    if (status != netLastStatus)
+    {
+        netLastStatus = status;
+        emit netplayStatus(status);
+        if (s.GetPhase() != OnlineSession::Phase::Running && s.GetPhase() != OnlineSession::Phase::Ended)
+            emuInstance->osdAddMessage(0, "%s", status.toUtf8().constData());
+    }
+    for (const ChatLine& line : s.TakeChat())
+    {
+        QString text = QString::fromStdString(line.Text);
+        if (line.Player < 0)
+        {
+            emit netplayChat(QString(), text, true);
+            emuInstance->osdAddMessage(0, "%s", text.toUtf8().constData());
+        }
+        else
+        {
+            QString name = QString::fromStdString(s.PlayerName(line.Player));
+            emit netplayChat(name, text, false);
+            emuInstance->osdAddMessage(0, "%s: %s", name.toUtf8().constData(), text.toUtf8().constData());
+        }
+    }
+
+    if (s.GetPhase() == OnlineSession::Phase::Ended)
+    {
+        netplayFinish();
+        return;
+    }
+    if (s.GetPhase() != OnlineSession::Phase::Running)
+    {
+        SDL_Delay(4);
+        return;
+    }
+    if (!netShowing)
+        netplayShow();
+
+    const double freq = (double)SDL_GetPerformanceFrequency();
+    double now = SDL_GetPerformanceCounter() / freq;
+    if (now < netNextFrame)
+    {
+        // not time for the next frame yet
+        if (netNextFrame - now > 0.0015)
+            SDL_Delay(1);
+        return;
+    }
+
+    PlayerInput in = PlayerInput::FromFrontend(emuInstance->inputMask, emuInstance->isTouching,
+                                               emuInstance->touchX, emuInstance->touchY);
+    RollbackSession::FrameResult res = s.RunFrame(in);
+    if (res == RollbackSession::FrameResult::Ran)
+    {
+        emuInstance->drawScreen();
+        if (!useOpenGL)
+            emit windowUpdate();
+
+        const double frameTime = 1.0 / 59.8261;
+        netNextFrame += frameTime * (1.0 + s.TakeFrameWait());
+        if (now - netNextFrame > 0.1)
+            netNextFrame = now + frameTime;     // fell behind: do not race to catch up
+
+        netFrames++;
+        if (now - netMeasureStart >= 1.0)
+        {
+            SessionStats st = s.Stats();
+            char title[160];
+            snprintf(title, sizeof(title), "[%.0f] melonDS online - %s vs %s - ping %d ms, delay %d, rollback %d",
+                     netFrames / (now - netMeasureStart),
+                     s.PlayerName(0).c_str(), s.PlayerName(1).c_str(),
+                     st.Ping, s.InputDelay(), st.LastRollbackDepth);
+            changeWindowTitle(title);
+            netFrames = 0;
+            netMeasureStart = now;
+        }
+    }
+    else if (res == RollbackSession::FrameResult::Waiting)
+    {
+        // waiting for the other player's inputs
+        netNextFrame = std::max(netNextFrame, now);
+        SDL_Delay(1);
+    }
+}
+
+void EmuThread::netplayFinish()
+{
+    std::string reason = netSession->EndReason();
+
+    std::vector<u8> save;
+    if (netRequest && netRequest->KeepSave && netShowing)
+        save = netSession->LocalSave();
+
+    if (netShowing)
+    {
+        emuInstance->audioDisable();
+        emuInstance->renderLock.lock();
+        emuInstance->nds = netSavedNDS;
+        emuInstance->renderLock.unlock();
+        emuActive = netSavedActive;
+        netShowing = false;
+    }
+    netSavedNDS = nullptr;
+
+    netSession.reset();
+    if (netRequest && netRequest->Link)
+        netRequest->Link->Close();
+    netRequest.reset();
+    netActive = false;
+
+    if (!save.empty() && emuInstance->nds && emuInstance->cartInserted())
+    {
+        emuInstance->nds->SetNDSSave(save.data(), (u32)save.size());
+        reason += " Your save file now has what the game saved during the session.";
+    }
+
+    char title[100];
+    snprintf(title, sizeof(title), "melonDS " MELONDS_VERSION);
+    changeWindowTitle(title);
+    emit netplayEnded(QString::fromStdString(reason));
 }
