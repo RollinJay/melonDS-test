@@ -4,7 +4,8 @@ melonDS can play DS multiplayer games over the internet. Each player uses their
 own computer and their own copy of the game; the game's local wireless
 multiplayer (DS Download Play excepted, see [Limits](#limits)) works as if the
 DS consoles sat next to each other. This document explains how it works, how
-to play, how to run a server, what it cannot do, and how fast it runs.
+to play (also when a launcher starts melonDS), how to run a server, what it
+cannot do, and how fast it runs.
 
 ## How it works
 
@@ -77,12 +78,17 @@ learns its own public address from a *STUN server*, and the two exchange
 addresses through a *signaling server*.
 
 melonDS uses a [Nakama](https://heroiclabs.com/nakama/) server for signaling,
-and for the lobby around it: *game channels* in the manner of Fightcade, one
-per game, where players see who is there, chat, and challenge each other.
-The server never sees the game: once two players are paired, everything goes
-directly between their computers. The same arrangement is used by
+and for finding an opponent: *game channels* in the manner of Fightcade, one
+per game, where players see who is there, chat, and challenge each other;
+and Nakama's own *matchmaker*, which pairs two players who ask for a quick
+match of the same game. The server never sees the game: once two players are
+paired, everything goes directly between their computers. The same
+arrangement is used by
 [IKEMEN GO's Nakama layer](https://github.com/RollinJay/IkemenGo-Nakama), and
-the two share the hole-punching handshake.
+the two share the hole-punching handshake. A launcher that uses the same
+server, [Nakama Matchmaker](https://github.com/RollinJay/Nakama-Matchmaker),
+can start melonDS online, and its players and melonDS's meet in the same
+matchmaker (see [From a launcher](#from-a-launcher)).
 
 Without a server, a *direct connection* also works when the host can be
 reached on its UDP port (port forwarded on its router, or both on the same
@@ -99,6 +105,14 @@ network).
   every console, so no BIOS files are needed. Each player's console gets that
   player's firmware settings (birthday, language, color, message) on every
   computer, and as its nickname the name that player uses online.
+
+melonDS sums up the ROM and the protocol in the game's *online identity*: 40
+hexadecimal digits computed from the hash of the ROM and the version of the
+online protocol (the exact formula is under [Wire formats](#wire-formats)).
+Two players with the same identity pass the session's checks of both, so
+matchmakers pair players by it: melonDS's quick match does, and so does a
+launcher, which asks melonDS for it (`--netplay-identity`, see
+[Command line](#command-line)).
 
 ### Games tested
 
@@ -156,50 +170,125 @@ current game at the bottom.
    the left shows the other channels and how many players are in each;
    double-click one to join it (to play in a channel, its game must be the
    one you loaded).
-3. In a channel:
-   - *Looking to play* tells the others you want a game.
+3. Find an opponent:
+   - *Looking to play* tells the others in the channel you want a game.
    - Select a player and click *Challenge* (or double-click the player). They
      have 30 seconds to accept. The challenger hosts.
-   - *Quick match* pairs you with the next player who asks for one.
+   - *Quick match* asks the server's matchmaker for an opponent who has the
+     same game (the same online identity): another melonDS asking for a
+     quick match, or a player looking for a match of that game in Nakama
+     Matchmaker's launcher. While it searches, the channel shows you as
+     looking to play; *Cancel quick match* stops it, and so do joining
+     another game's channel and disconnecting. The player the matchmaker
+     lists first hosts. Quick match does not need the channel: it also works
+     on a server that has no channels (see
+     [Running a server](#running-a-server)).
 4. Once paired, both computers connect, compare their ROMs, exchange saves
    and start. The game appears in the main window; your controls work as
    usual. The window title shows the ping, the input delay and the depth of
-   the last rollback.
+   the last rollback. After a quick match, the chat in the online window goes
+   to your opponent, who may be in no channel.
 5. *Leave the game* ends the session for both players.
-
-### From a launcher
-
-A launcher, such as Nakama Matchmaker, can start melonDS on its own server and
-account, so that the player needs no settings:
-
-```sh
-melonDS --netplay-config servers.json --netplay-online --netplay-quick --netplay-exit game.nds
-```
-
-`--netplay-config` names a file of server profiles in the format of IKEMEN
-GO's `servers.json` (host, port, server key, TLS, device id, name, STUN
-servers); `--netplay-server ID` picks one of its profiles instead of its
-default. melonDS uses that profile in place of the online settings for this
-run only and saves none of it; the device id makes it the launcher's account.
-`--netplay-online` opens the online window and connects, which joins the
-loaded game's channel; `--netplay-quick` then asks for a quick match there.
 
 ### Direct connection
 
 One player hosts: Direct connection..., *Host*, a UDP port that the other
 player can reach, and a session code (any word). The other player joins:
 *Join*, the host's address and port (for example `203.0.113.5:7064`), and the
-same session code.
+same session code. The same works from the command line (`--netplay-host`,
+`--netplay-join`, see [Command line](#command-line)).
 
-The same from the command line, for scripts and external lobbies:
+### From a launcher
+
+A launcher such as [Nakama Matchmaker](https://github.com/RollinJay/Nakama-Matchmaker)
+signs its player in to a Nakama server and keeps a list of games. It starts
+melonDS online in one of two ways.
+
+**On the launcher's server and account** (the launcher's *Play online*). The
+launcher writes a *server profile* file and starts
+
+```sh
+melonDS --netplay-config profile.json --netplay-online game.nds
+```
+
+The file has the format of IKEMEN GO's `servers.json`:
+
+```json
+{ "version": 1, "default": "club",
+  "servers": [ { "id": "club", "name": "DS Club", "host": "ds.example.org", "port": 7350,
+                 "server_key": "...", "ssl": false, "device_id": "...", "username": "Ryu",
+                 "stun_servers": ["stun.l.google.com:19302"] } ] }
+```
+
+For this run, melonDS uses the profile's server, device id, name and STUN
+servers in place of the online settings (an empty name, device id or STUN
+list keeps the setting's), and saves none of it; Settings... shows the
+fields that come from the profile read-only. The device id names the
+account, so melonDS signs in as the same player as the launcher. `--netplay-server ID` picks another profile of the file than
+its default. `--netplay-online` opens the online window and connects, which
+joins the game's channel; with `--netplay-quick` melonDS then starts a quick
+match, and with `--netplay-exit` it quits when the session ends.
+
+**With a match the launcher found** (the launcher's *Find a match*). The
+launcher looks for an opponent itself, with the same matchmaker ticket as
+melonDS's quick match (see
+[Quick match through the matchmaker](#quick-match-through-the-matchmaker)),
+so it finds players of both. When it has one, it hands the match to melonDS
+in a *connection file*, whose path it puts in the environment variable
+`NETPLAY_CONNECT`: version 1 of the format in Nakama Matchmaker's
+`docs/launch.md`, with `game.kind` set to `melonds` and `game.profile` to the
+ROM's path. melonDS started this way:
+
+1. reads the file and deletes it, and removes `NETPLAY_CONNECT` from its
+   environment, since the file holds the launcher's session;
+2. loads the ROM that `game.profile` names (a ROM given on the command line
+   must be that same file) and computes its identity again, refusing the
+   match when it is not the one the launcher matched on;
+3. signs in with the launcher's session, as the same player (renewing it
+   first with its refresh token if it has less than 30 seconds left), joins
+   the match, and connects to the opponent as after a quick match;
+4. plays; the online window shows only this match and the chat with the
+   opponent;
+5. leaves the match and quits, with exit status 0 when the session ended
+   because a player left it (closing melonDS, by its window or with
+   SIGTERM, is leaving), or 1 when it failed: a ROM or identity that
+   differs (the launcher's or the opponent's), a match melonDS cannot play
+   (a bad file, not two players, a session that is not the account of the
+   file's player), no connection to the server or to the opponent, an
+   opponent who left before the game started, a desync.
+
+### Command line
+
+| Option | Meaning |
+|---|---|
+| `--netplay-host PORT` | Host a direct session: wait for the other player on this UDP port. |
+| `--netplay-join HOST:PORT` | Join the direct session of the host at that address. |
+| `--netplay-code CODE` | The direct session's code; both players give the same. |
+| `--netplay-delay N` | The input delay in frames, when hosting a direct session (default: from the round trip). |
+| `--netplay-config FILE` | For this run, use the server and account of a server profile file instead of the online settings ([From a launcher](#from-a-launcher)). |
+| `--netplay-server ID` | The profile of `--netplay-config` to use (default: the file's `default`, or else its first). |
+| `--netplay-online` | Open the online window at start and connect to the server; melonDS joins the loaded game's channel. |
+| `--netplay-quick` | As `--netplay-online`, then start a quick match for the loaded game. |
+| `--netplay-exit` | Quit melonDS when the session ends, with exit status 0 when a player left it and 1 when it failed. With `--netplay-online` or `--netplay-quick`, also quit (with 1) when the connection to the server fails or the quick match cannot start. |
+| `--netplay-identity ROM` | Print the ROM's online identity on the last line of standard output and exit with status 0, or print why not on standard error and exit with 1. Works without a display. |
+
+The environment variable `NETPLAY_CONNECT` names a launcher's connection file
+([From a launcher](#from-a-launcher)); melonDS then plays that match and
+quits, as with `--netplay-exit`.
+
+A ROM is given as `game.nds`, as an archive that holds one ROM
+(`game.zip`), or as an archive and the ROM in it (`"game.zip|game.nds"`).
+`--netplay-host`, `--netplay-join`, `--netplay-quick` and a connection file
+need the ROM to be loaded at start (from the command line, or from the file's
+`game.profile`); a direct session cannot be combined with `--netplay-online`
+or `--netplay-quick`, and neither can a connection file. For example:
 
 ```sh
 melonDS --netplay-host 7064 --netplay-code word game.nds
 melonDS --netplay-join 203.0.113.5:7064 --netplay-code word game.nds
+melonDS --netplay-config profile.json --netplay-quick --netplay-exit game.nds
+melonDS --netplay-identity game.nds
 ```
-
-`--netplay-delay N` sets the input delay when hosting, and `--netplay-exit`
-quits melonDS when the session ends.
 
 ### During a session
 
@@ -222,11 +311,31 @@ game you had loaded before comes back, paused.
 | Rollback limit | 1 to 8 frames; the lower of the two players' applies. |
 | Keep what the game saves | See [Saves](#saves). |
 
+With `--netplay-config`, the server, and the online name and STUN servers
+when the profile names them, are the launcher's for that run
+([From a launcher](#from-a-launcher)).
+
 ## Running a server
 
-`src/net/rollback/server/` holds the server module (`melonds_channel.lua`), a
-configuration example and the setup steps (README.md). A server needs Nakama
-and PostgreSQL, and only TCP port 7350 open to the players.
+`src/net/rollback/server/` holds the channel module (`melonds_channel.lua`,
+under the MIT license in `LICENSE` there, not melonDS's GPL), a configuration
+example and the setup steps (README.md). A server needs
+Nakama and PostgreSQL, and only TCP port 7350 open to the players.
+[Nakama Matchmaker](https://github.com/RollinJay/Nakama-Matchmaker) can also
+run one for a community of players (its `docs/hosting.md`); its DS servers
+have the channel module.
+
+- **Game channels** (chat, challenges, the list of who is there) need the
+  channel module.
+- **Quick match and the matches a launcher hands over** need no module: they
+  use Nakama's matchmaker, which every Nakama server has, so they work on any
+  Nakama server, among them every Nakama Matchmaker community server.
+- **With IKEMEN GO's Nakama modules** on the same server, their matchmaker
+  hook turns every two-player match into an `ikemen_session` match, an
+  authoritative match that passes the players' messages on to each other,
+  and melonDS joins it by its id. Without them, Nakama relays the match
+  itself and melonDS joins it with the matchmaker's token. melonDS plays both
+  the same way.
 
 ## Limits
 
@@ -289,7 +398,8 @@ a JIT that is rolled back does not give exactly the same results.
 | `src/net/rollback/ggpo/`, `kcp/` | Vendored GGPO (changed, see its README) and KCP. |
 | `src/net/rollback/server/` | The Nakama channel module. |
 | `src/net/rollback/tool/` | `melonDS-netplay-tool` (build with `-DBUILD_NETPLAY_TOOL=ON`). |
-| `src/frontend/qt_sdl/NetplayOnlineDialog.*`, `NakamaClient.*` | The online window and the Nakama client. |
+| `src/frontend/qt_sdl/NetplayOnlineDialog.*`, `NakamaClient.*` | The online window (channels, quick match, matches from a launcher) and the Nakama client. |
+| `src/frontend/qt_sdl/NetplayLauncher.*` | What a launcher gives melonDS: server profiles (`--netplay-config`), connection files (`NETPLAY_CONNECT`), and game identities. |
 | `src/frontend/qt_sdl/EmuThread.cpp` (`netplay*`) | Running a session in place of the normal emulation. |
 
 ### Determinism
@@ -366,3 +476,49 @@ ROM hash, console settings, save size and hash, preferences), settings (from
 the host), save chunks, ready (machine hash), then desync hashes, chat and
 bye. A player's input is 4 bytes: 12 buttons, a touch flag and the touch
 position.
+
+The hello's ROM hash is the XXH3-128 hash of the bytes melonDS loaded for
+the ROM (after taking them out of an archive), its low 64 bits first, each
+half little-endian; its protocol version is `kOnlineProtocolVersion`
+(`OnlineSession.h`, now 2), which changes whenever two machines of different
+versions could compute different games. The *online identity* is the SHA-1,
+in 40 lowercase hexadecimal digits, of the UTF-8 text
+`melonDS-rollback/<protocol version>`, a line feed, and the ROM hash in 32
+lowercase hexadecimal digits (`RollbackNet::NetplayIdentity`). Two players
+with the same identity therefore pass the session's protocol and ROM checks.
+
+### Quick match through the matchmaker
+
+Quick match adds a Nakama matchmaker ticket that is exactly the one Nakama
+Matchmaker's launcher adds for a two-player DS game (its `docs/protocol.md`,
+"Matchmaking"), so that both find each other:
+
+| Field | Value |
+|---|---|
+| `string_properties` | `game`: the identity, `kind`: `melonds`, `mode`: `unranked`, `players`: `2` |
+| `numeric_properties` | none |
+| `query` | `+properties.game:<identity> +properties.kind:melonds +properties.mode:unranked +properties.players:2` |
+| `min_count`, `max_count` | 2, 2 (and `count_multiple` 1) |
+
+The channel status says *looking* while the ticket waits; cancelling removes
+it. When Nakama matches two tickets, a pair found by quick match and a pair
+the launcher found and handed over (`NETPLAY_CONNECT`) play the same way:
+
+1. Both join the match: an authoritative match by its `match_id` (a server
+   with IKEMEN GO's modules makes an `ikemen_session` match), or else a match
+   Nakama relays, by the matchmaker's `token` (the match's id then comes with
+   the answer to the join).
+2. Each sends a hello through the match, op code `0x4E504845`, JSON
+   `{"player": <index>, "name": "...", "identity": "<40 digits>", "kind": "melonds"}`,
+   and sends it again when the other player joins (a match does not keep
+   what was sent before someone joined). A hello with another identity or
+   kind ends the match on the receiving side.
+3. The P2P signals of the connection (`IKEMEN-P2P/1`, the JSON that the
+   channels relay too) go through the match, op code `0x494B5347`. The
+   players' order is that of the users in the matchmaker's result, the same
+   for both; the first one hosts the session.
+4. A player who leaves the match before the game started ends it for the
+   other. When the session ends, both leave the match.
+
+The channel module's own quick match (its `QUEUE` message) is still in the
+module for older versions of melonDS, which used it; current versions do not.

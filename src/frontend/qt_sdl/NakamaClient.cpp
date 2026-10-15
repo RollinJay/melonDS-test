@@ -328,6 +328,10 @@ NakamaClient::NakamaClient(QObject* parent) : QObject(parent)
         pingTimer->stop();
         pendingJoins.clear();
         pingCid.clear();
+        // the server drops a closed socket's matchmaker tickets
+        ticket.clear();
+        ticketCid.clear();
+        cancelledTicketCids.clear();
         if (was)
             emit connectionChanged(false, reason);
     });
@@ -356,6 +360,36 @@ void NakamaClient::connectToServer(const Server& srv, const QString& device, con
     authenticate(!username.isEmpty());
 }
 
+void NakamaClient::useSession(const Server& srv, const QString& tok, const QString& refresh)
+{
+    disconnectFromServer();
+    server = srv;
+    deviceID.clear();
+    requestedUsername.clear();
+    token = tok;
+    refreshToken = refresh;
+    connecting = true;
+    if (!parseClaims(token, uid, uname, expires))
+    {
+        token.clear();
+        connecting = false;
+        emit connectionChanged(false, "The session it was given is not a Nakama session.");
+        return;
+    }
+    withFreshToken([this](bool ok, QString error)
+    {
+        if (!connecting)
+            return;     // cancelled meanwhile
+        if (!ok)
+        {
+            connecting = false;
+            emit connectionChanged(false, "Could not renew the session: " + error);
+            return;
+        }
+        openSocket();
+    });
+}
+
 void NakamaClient::disconnectFromServer()
 {
     if (connected || connecting)
@@ -366,6 +400,9 @@ void NakamaClient::disconnectFromServer()
         connecting = false;
         pingTimer->stop();
         pendingJoins.clear();
+        ticket.clear();
+        ticketCid.clear();
+        cancelledTicketCids.clear();
         if (was)
             emit connectionChanged(false, QString());
     }
@@ -429,20 +466,38 @@ bool NakamaClient::parseClaims(const QString& tok, QString& outUid, QString& out
     return !outUid.isEmpty();
 }
 
-void NakamaClient::onAuthenticated(const QJsonObject& session)
+bool NakamaClient::takeSession(const QJsonObject& session)
 {
-    token = session.value("token").toString();
+    QString newToken = session.value("token").toString();
+    QString newUid, newName;
+    qint64 newExpires = 0;
+    if (!parseClaims(newToken, newUid, newName, newExpires))
+        return false;
+    token = newToken;
     QString refresh = session.value("refresh_token").toString();
     if (!refresh.isEmpty())
         refreshToken = refresh;
-    if (!parseClaims(token, uid, uname, expires))
+    uid = newUid;
+    uname = newName;
+    expires = newExpires;
+    return true;
+}
+
+void NakamaClient::onAuthenticated(const QJsonObject& session)
+{
+    if (!takeSession(session))
     {
         connecting = false;
         emit connectionChanged(false, "The server sent an invalid session.");
         return;
     }
+    openSocket();
+}
+
+void NakamaClient::openSocket()
+{
     if (connected || ws->isOpen())
-        return;     // a token refresh
+        return;
 
     QUrlQuery q;
     q.addQueryItem("lang", "en");
@@ -477,11 +532,19 @@ void NakamaClient::withFreshToken(std::function<void(bool, QString)> then)
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (reply->error() == QNetworkReply::NoError && status >= 200 && status < 300)
         {
-            onAuthenticated(QJsonDocument::fromJson(data).object());
-            then(true, QString());
+            if (takeSession(QJsonDocument::fromJson(data).object()))
+                then(true, QString());
+            else
+                then(false, "the server sent an invalid session");
             return;
         }
-        // the refresh token expired too: sign in again with the device id
+        // the refresh token expired too: sign in again with the device id, if
+        // this client has one (a session that someone else opened ends here)
+        if (deviceID.isEmpty())
+        {
+            then(false, ReplyError(reply, data));
+            return;
+        }
         QUrl url(baseURL() + "/v2/account/authenticate/device");
         QUrlQuery q;
         q.addQueryItem("create", "true");
@@ -501,8 +564,10 @@ void NakamaClient::withFreshToken(std::function<void(bool, QString)> then)
                 then(false, ReplyError(r2, d2));
                 return;
             }
-            onAuthenticated(QJsonDocument::fromJson(d2).object());
-            then(true, QString());
+            if (takeSession(QJsonDocument::fromJson(d2).object()))
+                then(true, QString());
+            else
+                then(false, "the server sent an invalid session");
         });
     });
 }
@@ -548,8 +613,15 @@ void NakamaClient::sendEnvelope(const QString& field, const QJsonObject& payload
 void NakamaClient::joinMatch(const QString& matchID)
 {
     QString cid = QString::number(nextCid++);
-    pendingJoins.insert(cid, matchID);
+    pendingJoins.insert(cid, PendingJoin {matchID, QString()});
     sendEnvelope("match_join", QJsonObject {{"match_id", matchID}}, cid);
+}
+
+void NakamaClient::joinMatchByToken(const QString& matchToken)
+{
+    QString cid = QString::number(nextCid++);
+    pendingJoins.insert(cid, PendingJoin {QString(), matchToken});
+    sendEnvelope("match_join", QJsonObject {{"token", matchToken}}, cid);
 }
 
 void NakamaClient::leaveMatch(const QString& matchID)
@@ -565,6 +637,54 @@ void NakamaClient::sendMatchData(const QString& matchID, qint64 opCode, const QB
     p.insert("data", QString::fromLatin1(data.toBase64()));
     p.insert("reliable", true);
     sendEnvelope("match_data_send", p);
+}
+
+void NakamaClient::addMatchmaker(const QString& query, int minCount, int maxCount, const QJsonObject& stringProperties)
+{
+    removeMatchmaker();
+    if (!connected)
+    {
+        emit matchmakerFailed("not connected to the server");
+        return;
+    }
+    ticketCid = QString::number(nextCid++);
+    QJsonObject add {
+        {"query", query},
+        {"min_count", minCount},
+        {"max_count", maxCount},
+        {"count_multiple", 1},
+        {"string_properties", stringProperties},
+        {"numeric_properties", QJsonObject()},
+    };
+    sendEnvelope("matchmaker_add", add, ticketCid);
+}
+
+void NakamaClient::removeMatchmaker()
+{
+    if (!ticket.isEmpty())
+    {
+        sendEnvelope("matchmaker_remove", QJsonObject {{"ticket", ticket}});
+        ticket.clear();
+    }
+    if (!ticketCid.isEmpty())
+    {
+        // removed when the server confirms it (also after another ticket was added)
+        cancelledTicketCids.insert(ticketCid);
+        ticketCid.clear();
+    }
+}
+
+bool NakamaClient::isMatchmaking() const
+{
+    return !ticket.isEmpty() || !ticketCid.isEmpty();
+}
+
+static QStringList PresenceUserIDs(const QJsonValue& list)
+{
+    QStringList out;
+    for (const QJsonValue& v : list.toArray())
+        out << v.toObject().value("user_id").toString();
+    return out;
 }
 
 void NakamaClient::sendPing()
@@ -585,11 +705,73 @@ void NakamaClient::onSocketText(const QByteArray& text)
 
     if (!cid.isEmpty() && pendingJoins.contains(cid))
     {
-        QString matchID = pendingJoins.take(cid);
-        if (env.contains("match"))
-            emit matchJoined(matchID);
+        PendingJoin join = pendingJoins.take(cid);
+        QString error = env.value("error").toObject().value("message").toString();
+        if (join.Token.isEmpty())
+        {
+            if (env.contains("match"))
+                emit matchJoined(join.MatchID);
+            else
+                emit matchJoinFailed(join.MatchID, error);
+        }
         else
-            emit matchJoinFailed(matchID, env.value("error").toObject().value("message").toString());
+        {
+            // joined by token: the match's id comes with the answer
+            QString matchID = env.value("match").toObject().value("match_id").toString();
+            if (!matchID.isEmpty())
+                emit matchJoinedByToken(join.Token, matchID);
+            else
+                emit matchJoinByTokenFailed(join.Token, error.isEmpty() ? QString("the server sent no match") : error);
+        }
+        return;
+    }
+    if (!cid.isEmpty() && cancelledTicketCids.remove(cid))
+    {
+        // a ticket removed before the server confirmed it
+        QString oldTicket = env.value("matchmaker_ticket").toObject().value("ticket").toString();
+        if (!oldTicket.isEmpty())
+            sendEnvelope("matchmaker_remove", QJsonObject {{"ticket", oldTicket}});
+        return;
+    }
+    if (!cid.isEmpty() && cid == ticketCid)
+    {
+        ticketCid.clear();
+        QString newTicket = env.value("matchmaker_ticket").toObject().value("ticket").toString();
+        if (!newTicket.isEmpty())
+            ticket = newTicket;
+        else
+        {
+            QString error = env.value("error").toObject().value("message").toString();
+            emit matchmakerFailed(error.isEmpty() ? QString("the server refused the ticket") : error);
+        }
+        return;
+    }
+    if (env.contains("matchmaker_matched"))
+    {
+        QJsonObject o = env.value("matchmaker_matched").toObject();
+        NakamaMatched m;
+        m.Ticket = o.value("ticket").toString();
+        if (m.Ticket.isEmpty() || m.Ticket != ticket)
+            return;     // a ticket removed meanwhile
+        ticket.clear();
+        m.MatchID = o.value("match_id").toString();
+        m.Token = o.value("token").toString();
+        QString selfSession = o.value("self").toObject().value("presence").toObject().value("session_id").toString();
+        for (const QJsonValue& v : o.value("users").toArray())
+        {
+            QJsonObject presence = v.toObject().value("presence").toObject();
+            if (!selfSession.isEmpty() && presence.value("session_id").toString() == selfSession)
+                m.Self = m.UserIDs.size();
+            m.UserIDs << presence.value("user_id").toString();
+            m.Names << presence.value("username").toString();
+        }
+        emit matchmakerMatched(m);
+        return;
+    }
+    if (env.contains("match_presence_event"))
+    {
+        QJsonObject o = env.value("match_presence_event").toObject();
+        emit matchPresence(o.value("match_id").toString(), PresenceUserIDs(o.value("joins")), PresenceUserIDs(o.value("leaves")));
         return;
     }
     if (!cid.isEmpty() && cid == pingCid && env.contains("pong"))

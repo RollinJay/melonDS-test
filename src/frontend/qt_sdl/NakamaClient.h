@@ -27,7 +27,9 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
+#include <QSet>
 #include <QString>
+#include <QStringList>
 
 class QNetworkAccessManager;
 class QTcpSocket;
@@ -76,9 +78,25 @@ private:
     bool closing = false;
 };
 
+// What Nakama's matchmaker found: the players, in the order the matchmaker
+// gives them (the same for every one of them), and the match they play in:
+// an authoritative match that the server's matchmaker hook made (MatchID), or
+// a match that Nakama relays (Token).
+struct NakamaMatched
+{
+    QString Ticket;
+    QString MatchID;
+    QString Token;
+    QStringList UserIDs;
+    QStringList Names;          // their usernames
+    int Self = -1;              // this player's index
+};
+Q_DECLARE_METATYPE(NakamaMatched)
+
 // A client of a Nakama server (https://heroiclabs.com/nakama): signs in with
-// a device id, keeps a realtime socket open, calls RPCs and exchanges match
-// data. Everything happens on the thread that owns it (the UI thread).
+// a device id (or a session that someone else opened), keeps a realtime socket
+// open, calls RPCs, exchanges match data and uses the matchmaker. Everything
+// happens on the thread that owns it (the UI thread).
 class NakamaClient : public QObject
 {
     Q_OBJECT
@@ -97,6 +115,9 @@ public:
 
     // username names the account when the device's account is created
     void connectToServer(const Server& server, const QString& deviceID, const QString& username);
+    // Signs in with a session that someone else opened (a launcher's), renewed
+    // with its refresh token when it is about to expire: the same account.
+    void useSession(const Server& server, const QString& token, const QString& refreshToken);
     void disconnectFromServer();
     bool isConnected() const { return connected; }
     bool isConnecting() const { return connecting; }
@@ -108,20 +129,44 @@ public:
     void callRPC(const QString& id, const QJsonObject& payload, RpcDone done);
 
     void joinMatch(const QString& matchID);
+    // a match that Nakama relays, by its matchmaker token (matchJoinedByToken)
+    void joinMatchByToken(const QString& matchToken);
     void leaveMatch(const QString& matchID);
     void sendMatchData(const QString& matchID, qint64 opCode, const QByteArray& data);
+
+    // Adds a matchmaker ticket (one at a time: an earlier one is removed):
+    // matchmakerMatched when it is matched, matchmakerFailed if the server
+    // refuses it.
+    void addMatchmaker(const QString& query, int minCount, int maxCount, const QJsonObject& stringProperties);
+    // removes the ticket, also one the server has not confirmed yet
+    void removeMatchmaker();
+    bool isMatchmaking() const;
 
 signals:
     void connectionChanged(bool connected, QString error);
     void matchJoined(QString matchID);
     void matchJoinFailed(QString matchID, QString error);
+    void matchJoinedByToken(QString matchToken, QString matchID);
+    void matchJoinByTokenFailed(QString matchToken, QString error);
     void matchData(QString matchID, QString senderID, qint64 opCode, QByteArray data);
+    // user ids that joined and left a match this client is in
+    void matchPresence(QString matchID, QStringList joined, QStringList left);
+    void matchmakerMatched(NakamaMatched matched);
+    void matchmakerFailed(QString error);
     void serverError(QString message);
     void roundTripMeasured(int ms);
 
 private:
+    struct PendingJoin
+    {
+        QString MatchID;
+        QString Token;
+    };
+
     void authenticate(bool withUsername);
     void onAuthenticated(const QJsonObject& session);
+    bool takeSession(const QJsonObject& session);
+    void openSocket();
     void withFreshToken(std::function<void(bool ok, QString error)> then);
     void sendEnvelope(const QString& field, const QJsonObject& payload, const QString& cid = QString());
     void onSocketText(const QByteArray& text);
@@ -143,7 +188,10 @@ private:
     bool connecting = false;
 
     int nextCid = 1;
-    QHash<QString, QString> pendingJoins;   // cid -> match id
+    QHash<QString, PendingJoin> pendingJoins;   // by cid
+    QString ticket;             // the matchmaker ticket, once the server confirmed it
+    QString ticketCid;          // a ticket being added
+    QSet<QString> cancelledTicketCids;  // tickets removed before the server confirmed them
     QString pingCid;
     QElapsedTimer pingClock;
 };

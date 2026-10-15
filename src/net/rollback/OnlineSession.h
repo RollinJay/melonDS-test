@@ -36,6 +36,25 @@ namespace melonDS::RollbackNet
 
 class P2PLink;
 
+// The online protocol this melonDS speaks, which a session's hello names first:
+// two computers play together only when both name the same application and
+// version. The version also covers how the machine runs: two computers whose
+// machines would compute different games must not speak the same version
+// (2: the wireless bus delivers frames at the end of a round).
+constexpr u32 kOnlineProtocolVersion = 2;
+constexpr const char* kOnlineApp = "melonDS-rollback";
+
+// The hash by which a session compares the players' ROMs: XXH3-128 of the
+// bytes melonDS loaded (after extracting them from an archive), its low 64
+// bits first, each half little-endian.
+void OnlineROMHash(const u8* rom, size_t len, u8 out[16]);
+
+// The identity a matchmaker pairs players by (Nakama Matchmaker, or melonDS's
+// own quick match): 40 lowercase hexadecimal digits, the SHA-1 of the text
+// "melonDS-rollback/<protocol version>\n<ROM hash in hexadecimal>". Two players
+// with equal identities pass the session's protocol and ROM checks.
+std::string NetplayIdentity(const u8* rom, size_t len);
+
 // A player's console settings, as the other computers build that console:
 // what the game reads from the DS's firmware.
 struct PlayerProfile
@@ -110,6 +129,16 @@ public:
     OnlineSession(const OnlineSession&) = delete;
     OnlineSession& operator=(const OnlineSession&) = delete;
 
+    // How a session ended: a player left it (this one or the other), or it
+    // failed (no connection, different ROMs or versions, a desync, ...).
+    enum class EndKind
+    {
+        None,               // not ended
+        Left,               // this player left (Leave)
+        PeerLeft,           // the other player left
+        Failed,
+    };
+
     // Advances the setup and handles messages; call it every few milliseconds
     // until Running, then once per frame (RunFrame does not call it).
     void Poll();
@@ -120,6 +149,7 @@ public:
     std::string StatusText() const;
     // why it ended (empty if it has not)
     const std::string& EndReason() const { return Reason; }
+    EndKind HowEnded() const { return Ending; }
     bool IsHost() const { return Host; }
 
     // Once Synchronizing or Running:
@@ -139,8 +169,13 @@ public:
     void SendChat(const std::string& text);
     std::vector<ChatLine> TakeChat();
 
-    // Ends the session, telling the other player why.
+    // Ends the session: the player leaves. The other player is told the reason
+    // (or only that this player left, when it is empty).
     void Leave(const std::string& reason = "");
+    // Ends the session as failed, for a reason found outside the session (the
+    // other player's game is not the matched one, ...). The other player's
+    // session fails too.
+    void Abort(const std::string& reason);
 
     // The save memory of this player's console as it is now, for keeping
     // what the game saved during the session.
@@ -170,7 +205,10 @@ private:
         u64 SaveHash[2] {};
     };
 
-    void End(const std::string& reason, bool tellPeer);
+    // tellPeer: a failure goes to the other player as an error (their session
+    // fails too), a player leaving as a bye carrying peerReason
+    void End(const std::string& reason, bool tellPeer, EndKind kind = EndKind::Failed,
+             const std::string& peerReason = "");
     void SendHello();
     void SendSettings();
     void SendSaveChunks();
@@ -185,6 +223,7 @@ private:
     LocalSetup Local;
     Phase CurPhase = Phase::WaitingForLink;
     std::string Reason;
+    EndKind Ending = EndKind::None;
 
     u8 LocalRomHash[16] {};
     bool HelloSent = false, HelloReceived = false, SettingsKnown = false;

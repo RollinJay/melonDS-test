@@ -1189,6 +1189,87 @@ QStringList MainWindow::splitArchivePath(const QString& filename, bool useMember
     return { filename };
 }
 
+QStringList MainWindow::romFilesWithoutAsking(const QString& filename, QString& error)
+{
+    if (filename.isEmpty())
+    {
+        error = "No ROM was given.";
+        return {};
+    }
+
+#ifdef ARCHIVE_SUPPORT_ENABLED
+    const QStringList filenameParts = filename.split('|');
+    if (filenameParts.size() > 2)
+    {
+        error = filename + " contains too many '|'.";
+        return {};
+    }
+    if (filenameParts.size() == 2)
+    {
+        if (!QFileInfo(filenameParts.at(0)).exists())
+        {
+            error = "The archive " + filenameParts.at(0) + " does not exist.";
+            return {};
+        }
+        if (!Archive::ListArchive(filenameParts.at(0)).contains(filenameParts.at(1)))
+        {
+            error = "The archive " + filenameParts.at(0) + " does not contain " + filenameParts.at(1) + ".";
+            return {};
+        }
+        return filenameParts;
+    }
+#endif
+
+    if (!QFileInfo(filename).exists())
+    {
+        error = "The ROM file " + filename + " does not exist.";
+        return {};
+    }
+
+#ifdef ARCHIVE_SUPPORT_ENABLED
+    if (SupportedArchiveByExtension(filename)
+        || SupportedArchiveByMimetype(QMimeDatabase().mimeTypeForFile(filename)))
+    {
+        // the ROMs pickFileFromArchive would offer
+        QVector<QString> archiveROMList = Archive::ListArchive(filename);
+        if (archiveROMList.size() <= 1)
+        {
+            error = (!archiveROMList.isEmpty() && archiveROMList.at(0) == "OK")
+                    ? "The archive " + filename + " is empty."
+                    : "The archive " + filename + " could not be read.";
+            return {};
+        }
+        archiveROMList.removeFirst();
+        QStringList roms;
+        for (const QString& member : archiveROMList)
+        {
+            if (NdsRomByExtension(member) || GbaRomByExtension(member))
+            {
+                roms << member;
+                continue;
+            }
+            const QMimeType mimetype = QMimeDatabase().mimeTypeForFile(member, QMimeDatabase::MatchExtension);
+            if (NdsRomByMimetype(mimetype) || GbaRomByMimetype(mimetype))
+                roms << member;
+        }
+        if (roms.isEmpty())
+        {
+            error = "The archive " + filename + " does not contain any supported ROMs.";
+            return {};
+        }
+        if (roms.size() > 1)
+        {
+            error = "The archive " + filename + " contains several ROMs: name the one to use as " +
+                    filename + "|" + roms.first() + ".";
+            return {};
+        }
+        return { filename, roms.first() };
+    }
+#endif
+
+    return { filename };
+}
+
 QString MainWindow::pickFileFromArchive(QString archiveFileName)
 {
     QVector<QString> archiveROMList = Archive::ListArchive(archiveFileName);

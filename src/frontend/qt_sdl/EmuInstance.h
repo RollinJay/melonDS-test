@@ -172,6 +172,10 @@ public:
     // the DS ROM last loaded (online play reads it again from there)
     QStringList lastROMPath;
     bool readLastROM(std::vector<melonDS::u8>& data, std::string& name);
+    // Reads a ROM's data without parsing it, from a file or from a file in an
+    // archive (filepath as loadROM takes it). Works for GBA and NDS ROMs, and
+    // without an instance (online play's identities).
+    static bool loadROMData(const QStringList& filepath, std::unique_ptr<melonDS::u8[]>& filedata, melonDS::u32& filelen, std::string& basepath, std::string& romname) noexcept;
 
 private:
     static int lastSep(const std::string& path);
@@ -204,13 +208,12 @@ private:
     void setBatteryLevels();
     void reset();
     bool bootToMenu(QString& errorstr);
-    melonDS::u32 decompressROM(const melonDS::u8* inContent, const melonDS::u32 inSize, std::unique_ptr<melonDS::u8[]>& outContent);
+    static melonDS::u32 decompressROM(const melonDS::u8* inContent, const melonDS::u32 inSize, std::unique_ptr<melonDS::u8[]>& outContent);
     void clearBackupState();
     std::pair<std::unique_ptr<melonDS::Firmware>, std::string> generateDefaultFirmware();
     bool parseMacAddress(void* data);
     void customizeFirmware(melonDS::Firmware& firmware, bool overridesettings) noexcept;
 
-    bool loadROMData(const QStringList& filepath, std::unique_ptr<melonDS::u8[]>& filedata, melonDS::u32& filelen, std::string& basepath, std::string& romname) noexcept;
     QString getSavErrorString(std::string& filepath, bool gba);
     bool loadROM(QStringList filepath, bool reset, QString& errorstr);
     void ejectCart();

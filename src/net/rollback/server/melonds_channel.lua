@@ -10,8 +10,10 @@ local nk = require("nakama")
 -- A channel is an authoritative match per game, where the players of that
 -- game gather: it lists who is there and whether they are looking for a
 -- game, carries their chat, and pairs two players, either because one
--- challenged the other and the other accepted, or because both asked for a
--- quick match. A pair then opens a direct connection between their two
+-- challenged the other and the other accepted, or because both asked for
+-- the channel's own quick match (which only older versions of melonDS use:
+-- current ones find opponents with Nakama's matchmaker, without the
+-- channel). A pair then opens a direct connection between their two
 -- computers (the channel relays the P2P signals of that pair only) and
 -- plays; the channel runs no emulation and sees none of the game's traffic.
 --
@@ -22,12 +24,17 @@ local nk = require("nakama")
 --
 -- Client -> channel (match data, JSON)
 --   HELLO      {name, region, ping}        who this member is
---   STATUS     {status, ping, region}      status: idle | looking | away
+--   STATUS     {status, ping, region}      status: idle | looking | away | playing
+--                                          (playing: in a game that Nakama's
+--                                          matchmaker made, which the channel
+--                                          does not pair; a pair is playing anyway)
 --   CHAT       {text}
 --   CHALLENGE  {to}                        ask a member to play
 --   ANSWER     {from, accept}              answer a challenge
 --   CANCEL     {to}                        withdraw a challenge
---   QUEUE      {on}                        quick match: pair me with the next one
+--   QUEUE      {on}                        the channel's quick match: pair me with
+--                                          the next one (older melonDS versions;
+--                                          current ones use Nakama's matchmaker)
 --   DONE       {seq, reason}               the pair's session ended
 --   SIGNAL     P2P signal (IKEMEN-P2P/1)   relayed to its "to" member, within a pair
 --
@@ -71,7 +78,8 @@ local SIGNAL_MAX = 4096
 
 local CHANNEL_COLLECTION = "melonds_channels"
 
-local STATUSES = { idle = true, looking = true, away = true }
+-- what members may say they are (a pair's members are "playing" until it ends)
+local STATUSES = { idle = true, looking = true, away = true, playing = true }
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -366,7 +374,7 @@ local function handle(dispatcher, state, tick, message)
         if ping ~= nil then
             me.ping = math.max(-1, math.min(9999, math.floor(ping)))
         end
-        if cmd.status ~= nil and STATUSES[cmd.status] and me.status ~= "playing" then
+        if cmd.status ~= nil and STATUSES[cmd.status] and me.pairing == nil then
             me.status = cmd.status
             if cmd.status ~= "looking" then
                 remove_from_queue(state, user_id)

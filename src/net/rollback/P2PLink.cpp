@@ -317,6 +317,12 @@ std::string P2PLink::GetError() const
     return Error;
 }
 
+bool P2PLink::PeerSaidBye() const
+{
+    std::lock_guard lock(Lock);
+    return ByeReceived;
+}
+
 u16 P2PLink::LocalPort() const
 {
     std::lock_guard lock(Lock);

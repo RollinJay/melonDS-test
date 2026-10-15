@@ -129,6 +129,8 @@ public:
     State GetState() const;
     std::string GetError() const;
     static const char* StateName(State s);
+    // the other player closed the link (rather than going silent)
+    bool PeerSaidBye() const;
 
     u16 LocalPort() const;
     std::vector<P2PCandidate> LocalCandidates() const;

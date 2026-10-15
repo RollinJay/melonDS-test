@@ -30,6 +30,7 @@
 #include "FreeBIOS.h"
 #include "Platform.h"
 #include "version.h"
+#include "sha1/sha1.hpp"
 #include "xxhash/xxhash.h"
 
 namespace melonDS::RollbackNet
@@ -38,12 +39,46 @@ namespace melonDS::RollbackNet
 using Platform::Log;
 using Platform::LogLevel;
 
-// what this version speaks; a peer with another number is refused. It also
-// covers how the machine runs: two computers whose machines would compute
-// different games (2: the wireless bus delivers frames at the end of a round)
-// must not play together.
-static constexpr u32 kProtocolVersion = 2;
-static constexpr const char* kApp = "melonDS-rollback";
+// a peer that names another protocol version or application is refused
+static constexpr u32 kProtocolVersion = kOnlineProtocolVersion;
+static constexpr const char* kApp = kOnlineApp;
+
+void OnlineROMHash(const u8* rom, size_t len, u8 out[16])
+{
+    XXH128_hash_t h = XXH3_128bits(rom, len);
+    for (int i = 0; i < 8; i++)
+    {
+        out[i] = (u8)(h.low64 >> (i * 8));
+        out[8 + i] = (u8)(h.high64 >> (i * 8));
+    }
+}
+
+static std::string Hex(const u8* data, size_t len)
+{
+    static const char digits[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(len * 2);
+    for (size_t i = 0; i < len; i++)
+    {
+        out.push_back(digits[data[i] >> 4]);
+        out.push_back(digits[data[i] & 0xF]);
+    }
+    return out;
+}
+
+std::string NetplayIdentity(const u8* rom, size_t len)
+{
+    u8 romHash[16];
+    OnlineROMHash(rom, len, romHash);
+    std::string text = std::string(kApp) + "/" + std::to_string(kProtocolVersion) + "\n" + Hex(romHash, sizeof romHash);
+
+    SHA1_CTX ctx;
+    SHA1Init(&ctx);
+    SHA1Update(&ctx, (const unsigned char*)text.data(), (uint32_t)text.size());
+    u8 digest[20];
+    SHA1Final(digest, &ctx);
+    return Hex(digest, sizeof digest);
+}
 
 enum MessageType : u8
 {
@@ -145,12 +180,7 @@ OnlineSession::OnlineSession(std::shared_ptr<P2PLink> link, bool isHost, LocalSe
     if (Local.Version.empty())
         Local.Version = MELONDS_VERSION;
 
-    XXH128_hash_t h = XXH3_128bits(Local.ROM.data(), Local.ROM.size());
-    for (int i = 0; i < 8; i++)
-    {
-        LocalRomHash[i] = (u8)(h.low64 >> (i * 8));
-        LocalRomHash[8 + i] = (u8)(h.high64 >> (i * 8));
-    }
+    OnlineROMHash(Local.ROM.data(), Local.ROM.size(), LocalRomHash);
 
     Saves[LocalPlayer()] = Local.Save;
     SaveComplete[LocalPlayer()] = true;
@@ -205,18 +235,28 @@ std::string OnlineSession::StatusText() const
     return "";
 }
 
-void OnlineSession::End(const std::string& reason, bool tellPeer)
+void OnlineSession::End(const std::string& reason, bool tellPeer, EndKind kind, const std::string& peerReason)
 {
     if (CurPhase == Phase::Ended)
         return;
     if (tellPeer && Link && Link->GetState() == P2PLink::State::Ready)
     {
+        // a failure fails the other player's session too; a player leaving does not
         std::vector<u8> msg;
         ByteWriter w(msg);
-        w.Str(reason);
-        Link->Send(Msg_Bye, msg);
+        if (kind == EndKind::Failed)
+        {
+            w.Str("The other player's melonDS ended the session: " + reason);
+            Link->Send(Msg_Error, msg);
+        }
+        else
+        {
+            w.Str(peerReason);
+            Link->Send(Msg_Bye, msg);
+        }
     }
     Reason = reason;
+    Ending = kind;
     CurPhase = Phase::Ended;
     if (Rollback)
     {
@@ -232,7 +272,12 @@ void OnlineSession::End(const std::string& reason, bool tellPeer)
 
 void OnlineSession::Leave(const std::string& reason)
 {
-    End(reason.empty() ? "You left the session." : reason, true);
+    End(reason.empty() ? "You left the session." : reason, true, EndKind::Left, reason);
+}
+
+void OnlineSession::Abort(const std::string& reason)
+{
+    End(reason, true, EndKind::Failed);
 }
 
 void OnlineSession::Poll()
@@ -243,6 +288,13 @@ void OnlineSession::Poll()
     P2PLink::State ls = Link->GetState();
     if (ls == P2PLink::State::Failed || ls == P2PLink::State::Closed)
     {
+        // the other player said goodbye (its bye on the stream may not have
+        // been read), or the connection failed
+        if (Link->PeerSaidBye())
+        {
+            End("The other player left.", false, EndKind::PeerLeft);
+            return;
+        }
         std::string err = Link->GetError();
         End(err.empty() ? "The connection closed." : err, false);
         return;
@@ -515,7 +567,7 @@ void OnlineSession::HandleMessage(u8 type, const std::vector<u8>& data)
         {
             std::string why;
             r.Str(why, 512);
-            End(why.empty() ? "The other player left." : "The other player left: " + why, false);
+            End(why.empty() ? "The other player left." : "The other player left: " + why, false, EndKind::PeerLeft);
         }
         break;
 

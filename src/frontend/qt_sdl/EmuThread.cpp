@@ -86,7 +86,7 @@ void EmuThread::attachWindow(MainWindow* window)
     connect(this, SIGNAL(windowFullscreenToggle()), window, SLOT(onFullscreenToggled()));
     connect(this, SIGNAL(screenEmphasisToggle()), window, SLOT(onScreenEmphasisToggled()));
     connect(this, SIGNAL(netplayGameStarted()), window, SLOT(onNetplayStarted()));
-    connect(this, SIGNAL(netplayEnded(QString)), window, SLOT(onNetplayEnded(QString)));
+    connect(this, SIGNAL(netplayEnded(QString,bool)), window, SLOT(onNetplayEnded(QString)));
 
     if (window->winHasMenu())
     {
@@ -106,7 +106,7 @@ void EmuThread::detachWindow(MainWindow* window)
     disconnect(this, SIGNAL(windowFullscreenToggle()), window, SLOT(onFullscreenToggled()));
     disconnect(this, SIGNAL(screenEmphasisToggle()), window, SLOT(onScreenEmphasisToggled()));
     disconnect(this, SIGNAL(netplayGameStarted()), window, SLOT(onNetplayStarted()));
-    disconnect(this, SIGNAL(netplayEnded(QString)), window, SLOT(onNetplayEnded(QString)));
+    disconnect(this, SIGNAL(netplayEnded(QString,bool)), window, SLOT(onNetplayEnded(QString)));
 
     if (window->winHasMenu())
     {
@@ -714,7 +714,13 @@ void EmuThread::handleMessages()
 
         case msg_NetplayLeave:
             if (netSession)
-                netSession->Leave();
+            {
+                NetplayLeaveRequest req = msg.param.value<NetplayLeaveRequest>();
+                if (req.Failed)
+                    netSession->Abort(req.Reason.toStdString());
+                else
+                    netSession->Leave(req.Reason.toStdString());
+            }
             break;
 
         case msg_NetplayChat:
@@ -987,9 +993,9 @@ void EmuThread::netplayStart(std::shared_ptr<NetplayStartRequest> req)
     waitMessage();
 }
 
-void EmuThread::netplayLeave()
+void EmuThread::netplayLeave(const QString& reason, bool failed)
 {
-    sendMessage(msg_NetplayLeave);
+    sendMessage({.type = msg_NetplayLeave, .param = QVariant::fromValue(NetplayLeaveRequest {reason, failed})});
     waitMessage();
 }
 
@@ -1008,7 +1014,7 @@ void EmuThread::netplayBegin(std::shared_ptr<NetplayStartRequest> req)
     if (netSession)
     {
         req->Link->Close();
-        emit netplayEnded("An online session is already running.");
+        emit netplayEnded("An online session is already running.", true);
         return;
     }
 
@@ -1016,7 +1022,7 @@ void EmuThread::netplayBegin(std::shared_ptr<NetplayStartRequest> req)
     if (!emuInstance->readLastROM(local.ROM, local.ROMName))
     {
         req->Link->Close();
-        emit netplayEnded("Open the game you want to play online first (File > Open ROM...).");
+        emit netplayEnded("Open the game you want to play online first (File > Open ROM...).", true);
         return;
     }
 
@@ -1188,6 +1194,7 @@ void EmuThread::netplayStep()
 void EmuThread::netplayFinish()
 {
     std::string reason = netSession->EndReason();
+    bool failed = netSession->HowEnded() == melonDS::RollbackNet::OnlineSession::EndKind::Failed;
 
     std::vector<u8> save;
     if (netRequest && netRequest->KeepSave && netShowing)
@@ -1219,5 +1226,5 @@ void EmuThread::netplayFinish()
     char title[100];
     snprintf(title, sizeof(title), "melonDS " MELONDS_VERSION);
     changeWindowTitle(title);
-    emit netplayEnded(QString::fromStdString(reason));
+    emit netplayEnded(QString::fromStdString(reason), failed);
 }

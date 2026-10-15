@@ -35,7 +35,9 @@
 #include <QMimeData>
 #include <QVector>
 #include <QCommandLineParser>
+#include <QFileInfo>
 #include <QStandardPaths>
+#include <QTimer>
 #ifndef _WIN32
 #include <QGuiApplication>
 #include <QSocketNotifier>
@@ -61,6 +63,7 @@
 #include "Net.h"
 
 #include "CLI.h"
+#include "NetplayLauncher.h"
 #include "NetplayOnlineDialog.h"
 
 #include "Net_PCap.h"
@@ -268,12 +271,57 @@ bool MelonApplication::event(QEvent *event)
 }
 
 #ifndef _WIN32
+// SIGINT and SIGTERM quit melonDS as closing its window does. The signal can
+// come while the UI thread is in the middle of anything (drawing a screen,
+// ...), and quitting deletes the emulator instances, so the handler only
+// raises a flag, which the UI thread reads at a safe point (see main).
+static volatile std::sig_atomic_t quitSignalled = 0;
+// QApplication::quit() does nothing before main's event loop runs
+static bool mainLoopRunning = false;
+
 static void signalHandler(int signal)
 {
     std::signal(signal, SIG_DFL);
-    qApp->quit();
+    quitSignalled = 1;
 }
 #endif
+
+// --netplay-identity <rom>: prints the ROM's online identity (see
+// NetplayLauncher) on the last line of standard output and returns 0, or an
+// error on standard error and 1. Runs before Qt's window system starts, so that
+// it works without a display: launchers run it to match players.
+static int printNetplayIdentity(const char* rom)
+{
+    if (!rom || !*rom)
+    {
+        fprintf(stderr, "melonDS: --netplay-identity needs a ROM\n");
+        return 1;
+    }
+#ifdef _WIN32
+    QString path = QString::fromUtf8(rom);      // SDL's WinMain passes UTF-8
+#else
+    QString path = QString::fromLocal8Bit(rom);
+#endif
+    QString error;
+    QString identity = NetplayLauncher::IdentityOfPath(path, error);
+    if (identity.isEmpty())
+    {
+        fprintf(stderr, "melonDS: %s\n", error.toUtf8().constData());
+        return 1;
+    }
+    printf("%s\n", identity.toLatin1().constData());
+    fflush(stdout);
+    return 0;
+}
+
+// the same ROM: the same file (or archive, and the same file in it)
+static bool sameROMFiles(const QStringList& a, const QStringList& b)
+{
+    if (a.isEmpty() || a.size() != b.size())
+        return false;
+    QString first = QFileInfo(a.first()).canonicalFilePath();
+    return !first.isEmpty() && first == QFileInfo(b.first()).canonicalFilePath() && a.mid(1) == b.mid(1);
+}
 
 int main(int argc, char** argv)
 {
@@ -320,6 +368,16 @@ int main(int argc, char** argv)
     std::signal(SIGTERM, signalHandler);
 #endif
 
+    for (int i = 1; i < argc; i++)
+    {
+        if (!strcmp(argv[i], "--"))
+            break;
+        if (!strcmp(argv[i], "--netplay-identity"))
+            return printNetplayIdentity(i + 1 < argc ? argv[i + 1] : nullptr);
+        if (!strncmp(argv[i], "--netplay-identity=", 19))
+            return printNetplayIdentity(argv[i] + 19);
+    }
+
     printf("melonDS " MELONDS_VERSION "\n");
     printf(MELONDS_URL "\n");
 
@@ -330,7 +388,96 @@ int main(int argc, char** argv)
     MelonApplication melon(argc, argv);
     pathInit();
 
+#ifndef _WIN32
+    QTimer* signalCheck = new QTimer(&melon);
+    QObject::connect(signalCheck, &QTimer::timeout, &melon, []
+    {
+        if (!quitSignalled)
+            return;
+        if (mainLoopRunning)
+        {
+            quitSignalled = 0;
+            qApp->quit();
+        }
+        // a message box shown at start runs its own loop: the flag stays up,
+        // the box is closed as quit() closes boxes, and main quits before its
+        // loop
+        else if (QWidget* box = QApplication::activeModalWidget())
+            box->close();
+    });
+    signalCheck->start(100);
+#endif
+
+    // a match that a launcher found: its file holds the launcher's session, so
+    // it is read and deleted first thing, whatever happens next
+    NetplayLauncher::ConnectionFile launcherMatch;
+    QString launcherError;
+    const bool fromLauncher = NetplayLauncher::TakeConnectionFile(launcherMatch, launcherError);
+
     CLI::CommandLineOptions* options = CLI::ManageArgs(melon);
+
+    QStringList launcherROM;
+    if (!launcherError.isEmpty())
+    {
+        fprintf(stderr, "netplay: %s\n", launcherError.toUtf8().constData());
+        return 1;
+    }
+    if (fromLauncher)
+    {
+        if (options->netplayHost.has_value() || options->netplayJoin.has_value() || options->netplayOnline)
+        {
+            fprintf(stderr, "netplay: a launcher's match (NETPLAY_CONNECT) cannot be played together with "
+                            "--netplay-host, --netplay-join, --netplay-online or --netplay-quick\n");
+            return 1;
+        }
+        // the ROM the launcher matched on, which must still be the same game
+        QString error;
+        launcherROM = MainWindow::romFilesWithoutAsking(launcherMatch.ROMPath, error);
+        if (launcherROM.isEmpty())
+        {
+            fprintf(stderr, "netplay: the launcher's match names a ROM melonDS cannot use: %s\n", error.toUtf8().constData());
+            return 1;
+        }
+        if (options->dsRomPath.has_value())
+        {
+            QStringList given = options->dsRomArchivePath.has_value()
+                ? QStringList {*options->dsRomPath, *options->dsRomArchivePath}
+                : MainWindow::romFilesWithoutAsking(*options->dsRomPath, error);
+            if (!sameROMFiles(given, launcherROM))
+            {
+                fprintf(stderr, "netplay: the ROM on the command line (%s) is not the one of the launcher's match (%s)\n",
+                        options->dsRomPath->toUtf8().constData(), launcherMatch.ROMPath.toUtf8().constData());
+                return 1;
+            }
+        }
+        QString identity = NetplayLauncher::IdentityOfFiles(launcherROM, error);
+        if (identity.isEmpty())
+        {
+            fprintf(stderr, "netplay: %s\n", error.toUtf8().constData());
+            return 1;
+        }
+        if (identity != launcherMatch.Identity)
+        {
+            fprintf(stderr, "netplay: %s is not the game the launcher matched on (its identity differs: the ROM changed "
+                            "since, or the launcher asked another melonDS)\n", launcherMatch.ROMPath.toUtf8().constData());
+            return 1;
+        }
+        // played like a ROM given on the command line
+        if (options->bootAuto)
+            options->boot = true;
+    }
+    if (options->netplayConfig.has_value())
+    {
+        NetplayLauncher::ServerProfile profile;
+        QString error;
+        if (!NetplayLauncher::ReadServerProfile(*options->netplayConfig, options->netplayServer.value_or(QString()),
+                                                profile, error))
+        {
+            fprintf(stderr, "melonDS: --netplay-config: %s\n", error.toUtf8().constData());
+            return 1;
+        }
+        NetplayOnlineDialog::useServerProfile(profile);
+    }
 
     // http://stackoverflow.com/questions/14543333/joystick-wont-work-using-sdl
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
@@ -397,6 +544,7 @@ int main(int argc, char** argv)
 
     createEmuInstance();
 
+    bool startFailed = false;
     {
         MainWindow* win = emuInstances[0]->getMainWindow();
         bool memberSyntaxUsed = false;
@@ -414,7 +562,7 @@ int main(int argc, char** argv)
             return path;
         };
 
-        const QStringList dsfile = prepareRomPath(options->dsRomPath, options->dsRomArchivePath);
+        const QStringList dsfile = fromLauncher ? launcherROM : prepareRomPath(options->dsRomPath, options->dsRomArchivePath);
         const QStringList gbafile = prepareRomPath(options->gbaRomPath, options->gbaRomArchivePath);
 
         if (memberSyntaxUsed) printf("Warning: use the a.zip|b.nds format at your own risk!\n");
@@ -424,37 +572,46 @@ int main(int argc, char** argv)
         if (options->fullscreen)
             win->toggleFullscreen();
 
-        if (options->netplayHost.has_value() || options->netplayJoin.has_value())
+        // online play started from the command line: without its game, it ends here
+        const bool netplayNeedsROM = fromLauncher || options->netplayHost.has_value() ||
+                                     options->netplayJoin.has_value() || options->netplayQuick;
+        if (netplayNeedsROM && !loaded)
         {
-            if (!loaded)
-                printf("netplay: give the ROM to play on the command line\n");
-            else
-            {
-                NetplayOnlineDialog* dlg = NetplayOnlineDialog::openDlg(win, win->getEmuInstance());
-                dlg->startDirect(options->netplayHost.has_value(),
-                                 options->netplayHost.value_or(0),
-                                 options->netplayJoin.value_or(QString()),
-                                 options->netplayCode.value_or(QString()),
-                                 options->netplayDelay.value_or(-2),
-                                 options->netplayExit);
-            }
+            fprintf(stderr, "netplay: %s\n", fromLauncher ? "could not load the ROM of the launcher's match"
+                                                          : "give the ROM to play on the command line");
+            startFailed = true;
         }
-        else if (options->netplayConfig.has_value() || options->netplayOnline)
+        else if (fromLauncher)
         {
-            // a launcher's server and account (Nakama Matchmaker, as for IKEMEN GO)
-            QString error;
-            if (options->netplayConfig.has_value() &&
-                !NetplayOnlineDialog::useServerProfile(*options->netplayConfig, options->netplayServer.value_or(QString()), error))
-                printf("netplay: %s\n", error.toUtf8().constData());
-            else if (options->netplayOnline)
-            {
-                NetplayOnlineDialog* dlg = NetplayOnlineDialog::openDlg(win, win->getEmuInstance());
-                dlg->connectAtStart(options->netplayQuick, options->netplayExit);
-            }
+            NetplayOnlineDialog* dlg = NetplayOnlineDialog::openDlg(win, win->getEmuInstance());
+            dlg->startFromLauncher(launcherMatch);
+        }
+        else if (options->netplayHost.has_value() || options->netplayJoin.has_value())
+        {
+            NetplayOnlineDialog* dlg = NetplayOnlineDialog::openDlg(win, win->getEmuInstance());
+            dlg->startDirect(options->netplayHost.has_value(),
+                             options->netplayHost.value_or(0),
+                             options->netplayJoin.value_or(QString()),
+                             options->netplayCode.value_or(QString()),
+                             options->netplayDelay.value_or(-2),
+                             options->netplayExit);
+        }
+        else if (options->netplayOnline)
+        {
+            NetplayOnlineDialog* dlg = NetplayOnlineDialog::openDlg(win, win->getEmuInstance());
+            dlg->connectAtStart(options->netplayQuick, options->netplayExit);
         }
     }
 
-    int ret = melon.exec();
+#ifndef _WIN32
+    // SIGINT or SIGTERM during the start: quit as if the window were closed
+    // right away
+    const bool quitAtStart = quitSignalled;
+    mainLoopRunning = true;
+#else
+    const bool quitAtStart = false;
+#endif
+    int ret = startFailed ? 1 : quitAtStart ? 0 : melon.exec();
 
     delete options;
 

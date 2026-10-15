@@ -47,6 +47,7 @@
 #include "DSi_I2C.h"
 #include "FreeBIOS.h"
 #include "main.h"
+#include "NetplayOnlineDialog.h"
 
 #include "NDSCart/CartSD.h"
 
@@ -156,6 +157,8 @@ EmuInstance::EmuInstance(int inst) : deleting(false),
 EmuInstance::~EmuInstance()
 {
     deleting = true;
+    // before the emulation thread stops (which ends an online session)
+    NetplayOnlineDialog::closeDlg(this);
     deleteAllWindows();
 
     emuThread->emuExit();

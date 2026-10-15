@@ -61,6 +61,7 @@ set(SOURCES_QT_SDL
     LANDialog.cpp
     NetplayDialog.cpp
     NakamaClient.cpp
+    NetplayLauncher.cpp
     NetplayOnlineDialog.cpp
 )
 

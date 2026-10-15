@@ -36,6 +36,10 @@ namespace CLI
 CommandLineOptions* ManageArgs(QApplication& melon)
 {
     QCommandLineParser parser;
+    parser.setApplicationDescription("melonDS, a Nintendo DS emulator.\n"
+                                     "With NETPLAY_CONNECT=<file> in its environment, melonDS plays the online match that a "
+                                     "launcher (Nakama Matchmaker) found and handed over in that file, then quits: exit status 0 "
+                                     "when a player left, 1 when it failed. docs/NETPLAY.md describes online play.");
     parser.addHelpOption();
 
     parser.addPositionalArgument("nds", "Nintendo DS ROM (or an archive file which contains it) to load into Slot-1");
@@ -48,11 +52,12 @@ CommandLineOptions* ManageArgs(QApplication& melon)
     parser.addOption(QCommandLineOption("netplay-join", "Join the direct online session at this address", "host:port"));
     parser.addOption(QCommandLineOption("netplay-code", "Session code of a direct online session (both players give the same)", "code"));
     parser.addOption(QCommandLineOption("netplay-delay", "Input delay in frames when hosting (default: from the round trip)", "frames"));
-    parser.addOption(QCommandLineOption("netplay-exit", "Quit melonDS when the online session ends"));
-    parser.addOption(QCommandLineOption("netplay-config", "Server profiles (JSON, as IKEMEN GO's servers.json) to use instead of the online settings", "file"));
-    parser.addOption(QCommandLineOption("netplay-server", "The profile of --netplay-config to use (default: its default)", "id"));
-    parser.addOption(QCommandLineOption("netplay-online", "Open the online window and connect to the server at start"));
-    parser.addOption(QCommandLineOption("netplay-quick", "With --netplay-online: ask for a quick match in the game's channel"));
+    parser.addOption(QCommandLineOption("netplay-config", "For this run, use the server and account of a server profile file (the format of IKEMEN GO's servers.json, as Nakama Matchmaker writes it) instead of the online settings", "file"));
+    parser.addOption(QCommandLineOption("netplay-server", "The profile of --netplay-config to use (default: the file's default)", "id"));
+    parser.addOption(QCommandLineOption("netplay-online", "Open the online window at start and connect to the server; it joins the channel of the given ROM"));
+    parser.addOption(QCommandLineOption("netplay-quick", "Like --netplay-online, then start a quick match for the given ROM"));
+    parser.addOption(QCommandLineOption("netplay-exit", "Quit melonDS when the online session ends: exit status 0 when a player left, 1 when it failed"));
+    parser.addOption(QCommandLineOption("netplay-identity", "Print the online identity of a DS ROM (what matchmakers pair players by) and exit", "rom"));
 
 #ifdef ARCHIVE_SUPPORT_ENABLED
     parser.addOption(QCommandLineOption({"a", "archive-file"}, "Specify file to load inside an archive given (NDS)", "rom"));
@@ -78,8 +83,19 @@ CommandLineOptions* ManageArgs(QApplication& melon)
         options->netplayConfig = parser.value("netplay-config");
     if (parser.isSet("netplay-server"))
         options->netplayServer = parser.value("netplay-server");
-    options->netplayOnline = parser.isSet("netplay-online") || parser.isSet("netplay-quick");
     options->netplayQuick = parser.isSet("netplay-quick");
+    options->netplayOnline = parser.isSet("netplay-online") || options->netplayQuick;
+
+    if (options->netplayServer.has_value() && !options->netplayConfig.has_value())
+    {
+        fprintf(stderr, "melonDS: --netplay-server names a profile of --netplay-config, which is missing\n");
+        exit(1);
+    }
+    if (options->netplayOnline && (options->netplayHost.has_value() || options->netplayJoin.has_value()))
+    {
+        fprintf(stderr, "melonDS: a direct session (--netplay-host, --netplay-join) and --netplay-online or --netplay-quick cannot start together\n");
+        exit(1);
+    }
 
     QStringList posargs = parser.positionalArguments();
     switch (posargs.size())
@@ -102,10 +118,12 @@ CommandLineOptions* ManageArgs(QApplication& melon)
     else if (bootMode == "always")
     {
         options->boot = true;
+        options->bootAuto = false;
     }
     else if (bootMode == "never")
     {
         options->boot = false;
+        options->bootAuto = false;
     }
     else
     {

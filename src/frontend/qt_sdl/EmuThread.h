@@ -61,6 +61,15 @@ struct NetplayStartRequest
 };
 Q_DECLARE_METATYPE(std::shared_ptr<NetplayStartRequest>)
 
+// Why the UI ends an online session: empty when the player leaves; Failed
+// when the UI found that the session cannot go on.
+struct NetplayLeaveRequest
+{
+    QString Reason;
+    bool Failed = false;
+};
+Q_DECLARE_METATYPE(NetplayLeaveRequest)
+
 class EmuInstance;
 class MainWindow;
 class ScreenPanelGL;
@@ -156,7 +165,8 @@ public:
 
     // online rollback sessions (to be called from the UI thread)
     void netplayStart(std::shared_ptr<NetplayStartRequest> req);
-    void netplayLeave();
+    // ends the session: the player leaves, or (failed) the session fails for that reason
+    void netplayLeave(const QString& reason = QString(), bool failed = false);
     void netplaySendChat(const QString& text);
     bool netplayActive() const { return netActive.load(); }
 
@@ -196,7 +206,9 @@ signals:
     void netplayStatus(QString text);
     void netplayChat(QString name, QString text, bool notice);
     void netplayGameStarted();
-    void netplayEnded(QString reason);
+    // failed: the session did not end by a player leaving it (no connection,
+    // different games, a desync, ...)
+    void netplayEnded(QString reason, bool failed);
 
 private:
     void handleMessages();

@@ -73,6 +73,10 @@ public:
 
     bool preloadROMs(QStringList file, QStringList gbafile, bool boot);
     QStringList splitArchivePath(const QString& filename, bool useMemberSyntax);
+    // What splitArchivePath gives for a path with member syntax, without asking
+    // anything (and without a window): an archive must hold one ROM, or name it
+    // as "archive|rom". Empty, and why, if the path names no single ROM.
+    static QStringList romFilesWithoutAsking(const QString& filename, QString& error);
 
     void onAppStateChanged(Qt::ApplicationState state);
 
