@@ -29,6 +29,7 @@
 #else
 #  include <arpa/inet.h>
 #  include <netinet/in.h>
+#  include <sys/socket.h>
 #endif
 
 #include "P2PLink.h"
