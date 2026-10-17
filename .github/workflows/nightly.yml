@@ -1,9 +1,10 @@
 # Nightly build: runs the four build workflows (Ubuntu, Windows, macOS, BSD)
 # and publishes their packages as the rolling "nightly" pre-release.
 #
-#   - The schedule skips the night when the default branch has no commit since
-#     the last nightly (the commit the "nightly" tag points at) and that
-#     nightly's release exists.
+#   - The schedule runs at 8 PM Pacific time (America/Los_Angeles, so it
+#     follows daylight saving time). It skips the night when the default
+#     branch has no commit since the last nightly (the commit the "nightly"
+#     tag points at) and that nightly's release exists.
 #   - A manual run (workflow_dispatch) always builds. Only a run on the
 #     default branch publishes; on another branch it only builds.
 #   - Nothing is published unless the Linux x86_64, Windows x86_64 and macOS
@@ -14,7 +15,8 @@ name: nightly
 
 on:
   schedule:
-    - cron: '13 3 * * *'
+    - cron: '0 20 * * *'
+      timezone: America/Los_Angeles
   workflow_dispatch:
 
 permissions:
