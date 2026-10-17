@@ -106,23 +106,46 @@ jobs:
         with:
           pattern: melonDS-*.AppImage
           path: dl/linux
-      - name: Download the Windows builds
+      # Each build that unpacks to a bare melonDS(.exe) is downloaded by name
+      # into its own folder: a pattern that matches only one artifact unpacks
+      # it straight into "path", and the Package step could not tell which
+      # build it was. A build that is missing is reported by the Package step.
+      - name: Download the Windows x86_64 build
         uses: actions/download-artifact@v8
+        continue-on-error: true
         with:
-          pattern: melonDS-windows-*
-          path: dl/windows
+          name: melonDS-windows-x86_64
+          path: dl/windows/melonDS-windows-x86_64
+      - name: Download the Windows arm64 build
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: melonDS-windows-arm64
+          path: dl/windows/melonDS-windows-arm64
       - name: Download the macOS universal app
         uses: actions/download-artifact@v8
         with:
           pattern: macOS-universal.zip
           path: dl/macos
           skip-decompress: true
-      - name: Download the BSD builds
+      - name: Download the FreeBSD build
         uses: actions/download-artifact@v8
         continue-on-error: true
         with:
-          pattern: melonDS-*bsd-*
-          path: dl/bsd
+          name: melonDS-freebsd-x86_64
+          path: dl/bsd/melonDS-freebsd-x86_64
+      - name: Download the NetBSD build
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: melonDS-netbsd-x86_64
+          path: dl/bsd/melonDS-netbsd-x86_64
+      - name: Download the OpenBSD build
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: melonDS-openbsd-x86_64
+          path: dl/bsd/melonDS-openbsd-x86_64
 
       - name: Package
         run: |
