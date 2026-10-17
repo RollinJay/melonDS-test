@@ -24,6 +24,7 @@
 #include <QNetworkRequest>
 #include <QRandomGenerator>
 #include <QSslSocket>
+#include <QTcpSocket>
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
@@ -60,8 +61,12 @@ void WebSocketClient::open(const QString& h, int p, bool tls, const QString& pat
     closing = false;
 
     // a plain socket unless TLS is wanted (QSslSocket needs a TLS backend)
+#if QT_CONFIG(ssl)
     QSslSocket* ssl = tls ? new QSslSocket(this) : nullptr;
     socket = ssl ? ssl : new QTcpSocket(this);
+#else
+    socket = new QTcpSocket(this);
+#endif
     connect(socket, &QTcpSocket::readyRead, this, &WebSocketClient::onReadyRead);
     connect(socket, &QTcpSocket::disconnected, this, &WebSocketClient::onDisconnected);
     connect(socket, &QAbstractSocket::errorOccurred, this, [this](QAbstractSocket::SocketError)
@@ -70,6 +75,7 @@ void WebSocketClient::open(const QString& h, int p, bool tls, const QString& pat
             fail(socket->errorString());
     });
 
+#if QT_CONFIG(ssl)
     if (ssl)
     {
         if (!QSslSocket::supportsSsl())
@@ -81,6 +87,12 @@ void WebSocketClient::open(const QString& h, int p, bool tls, const QString& pat
         ssl->connectToHostEncrypted(host, (quint16)port);
     }
     else
+#else
+    // this build's Qt has no TLS support (the macOS builds, for one)
+    if (tls)
+        fail("TLS is not available in this build of melonDS");
+    else
+#endif
     {
         connect(socket, &QTcpSocket::connected, this, &WebSocketClient::onConnected);
         socket->connectToHost(host, (quint16)port);
