@@ -1,0 +1,196 @@
+# Nightly build: runs the four build workflows (Ubuntu, Windows, macOS, BSD)
+# and publishes their packages as the rolling "nightly" pre-release.
+#
+#   - The schedule skips the night when the default branch has no commit since
+#     the last nightly (the commit the "nightly" tag points at).
+#   - A manual run (workflow_dispatch) always builds. Only a run on the
+#     default branch publishes; on another branch it only builds.
+#   - Nothing is published unless every package was built, so a failed build
+#     leaves the previous nightly in place.
+name: nightly
+
+on:
+  schedule:
+    - cron: '13 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+
+jobs:
+  check:
+    name: Check for new commits
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v6
+      - name: Decide whether to build
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != schedule ]; then
+            echo "Started by $EVENT_NAME: building $GITHUB_SHA."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The commit the nightly tag points at; an annotated tag is peeled
+          # (its "^{}" line names the commit).
+          tagged=$(git ls-remote --tags origin 'refs/tags/nightly*' | awk '
+            $2 == "refs/tags/nightly"    { tag = $1 }
+            $2 == "refs/tags/nightly^{}" { peeled = $1 }
+            END { print (peeled != "" ? peeled : tag) }')
+          if [ "$tagged" = "$GITHUB_SHA" ]; then
+            echo "The nightly tag already points at $GITHUB_SHA: nothing new to build."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Last nightly: ${tagged:-none}. Building $GITHUB_SHA."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  ubuntu:
+    name: Ubuntu
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    uses: ./.github/workflows/build-ubuntu.yml
+
+  windows:
+    name: Windows
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    uses: ./.github/workflows/build-windows.yml
+
+  macos:
+    name: macOS
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    uses: ./.github/workflows/build-macos.yml
+
+  bsd:
+    name: BSD
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    uses: ./.github/workflows/build-bsd.yml
+
+  publish:
+    name: Publish the nightly release
+    needs: [check, ubuntu, windows, macos, bsd]
+    # A scheduled run always runs on the default branch.
+    if: >-
+      needs.check.outputs.build == 'true' &&
+      (github.event_name == 'schedule' ||
+       github.ref_name == github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the Linux AppImages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: melonDS-*.AppImage
+          path: dl/linux
+      - name: Download the Windows builds
+        uses: actions/download-artifact@v8
+        with:
+          pattern: melonDS-windows-*
+          path: dl/windows
+      - name: Download the macOS universal app
+        uses: actions/download-artifact@v8
+        with:
+          pattern: macOS-universal.zip
+          path: dl/macos
+          skip-decompress: true
+      - name: Download the BSD builds
+        uses: actions/download-artifact@v8
+        with:
+          pattern: melonDS-*bsd-*
+          path: dl/bsd
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir dist
+          missing=()
+
+          for arch in x86_64 aarch64; do
+            f=$(find dl/linux -type f -path "*-$arch.AppImage*" -print -quit 2>/dev/null || true)
+            if [ -n "$f" ]; then
+              cp "$f" "dist/melonDS-linux-$arch.AppImage"
+            else
+              missing+=("Linux $arch AppImage")
+            fi
+          done
+
+          for arch in x86_64 arm64; do
+            f="dl/windows/melonDS-windows-$arch/melonDS.exe"
+            if [ -f "$f" ]; then
+              zip -j -q "dist/melonDS-windows-$arch.zip" "$f"
+            else
+              missing+=("Windows $arch")
+            fi
+          done
+
+          f=$(find dl/macos -type f -print -quit 2>/dev/null || true)
+          if [ -n "$f" ] && unzip -tqq "$f"; then
+            cp "$f" dist/melonDS-macos-universal.zip
+          else
+            missing+=("macOS universal")
+          fi
+
+          for os in freebsd netbsd openbsd; do
+            f="dl/bsd/melonDS-$os-x86_64/melonDS"
+            if [ -f "$f" ]; then
+              chmod +x "$f"
+              zip -j -q "dist/melonDS-$os-x86_64.zip" "$f"
+            else
+              missing+=("$os x86_64")
+            fi
+          done
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf '::error::Not built: %s\n' "${missing[@]}"
+            exit 1
+          fi
+
+          (cd dist && sha256sum -- * > SHA256SUMS.txt)
+          ls -l dist
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Move the nightly tag to this commit (create it the first time).
+          if gh api "repos/$GH_REPO/git/ref/tags/nightly" --silent 2>/dev/null; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/nightly" \
+              -f sha="$GITHUB_SHA" -F force=true --silent
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" \
+              -f ref=refs/tags/nightly -f sha="$GITHUB_SHA" --silent
+          fi
+
+          # Recreate the release; deleting it leaves the tag in place.
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release delete nightly --yes
+          fi
+
+          cat > notes.md <<EOF
+          Nightly build of $GH_REPO.
+
+          - Commit: $GITHUB_SERVER_URL/$GH_REPO/commit/$GITHUB_SHA
+          - Built: $(date -u '+%Y-%m-%d %H:%M') UTC
+
+          This is an automatic build of the default branch, not a stable release.
+          SHA256SUMS.txt holds the SHA-256 checksum of each file.
+          EOF
+
+          gh release create nightly dist/* --verify-tag --prerelease --latest=false \
+            --title nightly --notes-file notes.md
