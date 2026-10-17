@@ -88,7 +88,7 @@ void WebSocketClient::open(const QString& h, int p, bool tls, const QString& pat
     }
     else
 #else
-    // this build's Qt has no TLS support (the macOS builds, for one)
+    // this build's Qt has no TLS support
     if (tls)
         fail("TLS is not available in this build of melonDS");
     else
